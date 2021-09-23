@@ -1,0 +1,8 @@
+[package]
+name = "rcmd-client"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+structopt = "0.3"

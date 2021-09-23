@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "rcmd-client",
+    "rcmd-server",
+    "rcmd-shared",
+]
