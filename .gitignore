@@ -1,1 +1,6 @@
 /target
+.vscode
+/tls-certs/*.key
+/tls-certs/*.crs
+/tls-certs/*.crt
+/tls-certs/*.pem
