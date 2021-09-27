@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "rcmd-client",
-    "rcmd-server",
-    "rcmd-shared",
+    "rcmd_client",
+    "rcmd_server",
+    "rcmd_shared",
 ]
