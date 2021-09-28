@@ -1,7 +1,0 @@
-[default.tls]
-certs = "../tls-certs/server.crt"
-key = "../tls-certs/server.pkcs8.key"
-
-[default.tls.mutual]
-ca_certs = "../tls-certs/rootCA.crt"
-mandatory = true  

@@ -3,8 +3,12 @@ use std::{
     sync::{atomic::AtomicU64, Arc, Mutex},
 };
 
-use rcmd_shared::{Job, JobCreatedResponse, CommandSpec};
-use rocket::{serde::json::Json, State};
+use rcmd_shared::{CommandSpec, Job, JobCreatedResponse};
+use rocket::{
+    config::{CipherSuite, MutualTls, TlsConfig},
+    serde::json::Json,
+    Config, State,
+};
 
 use crate::state::JobsState;
 
@@ -19,7 +23,10 @@ fn index() -> &'static str {
 }
 
 #[post("/jobs", format = "json", data = "<command>")]
-async fn start_job(command: Json<CommandSpec>, jobs_state: &State<JobsState>) -> Json<JobCreatedResponse> {
+async fn start_job(
+    command: Json<CommandSpec>,
+    jobs_state: &State<JobsState>,
+) -> Json<JobCreatedResponse> {
     Json(JobCreatedResponse {
         job_id: jobs_state.submit(command.into_inner()).await,
     })
@@ -42,7 +49,17 @@ fn get_job(id: u64, jobs_state: &State<JobsState>) -> Option<Json<Job>> {
 
 #[launch]
 fn rocket() -> _ {
-    rocket::build()
+    let tls_config =
+        TlsConfig::from_paths("../tls-certs/server.crt", "../tls-certs/server.pkcs8.key")
+            .with_ciphers(CipherSuite::TLS_V13_SET)
+            .with_mutual(MutualTls::from_path("../tls-certs/rootCA.crt").mandatory(true));
+
+    let config = Config {
+        tls: Some(tls_config),
+        ..Default::default()
+    };
+
+    rocket::custom(config)
         .manage(JobsState {
             jobs: Arc::new(Mutex::new(HashMap::new())),
             next_job_id: AtomicU64::new(0),
