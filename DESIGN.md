@@ -1,7 +1,8 @@
 # Design Document for Level 2 - Teleport Challenge
 
 This document aims to deliver a concise technical design proposal for the Level 2 challenge.
-Implementation approaches and design choices for the library, server and client implementations are given.
+Implementation approaches and design choices for the library, server (HTTP API) 
+and client (CLI) implementations are given.
 
 ## Library
 
@@ -28,13 +29,28 @@ The job pool is responsible for keeping and updating the states of the created j
 
 The following is proposed as the interface for the job pool:
 
-create(command, arguments) -> job id (a job object should always be created, errors are captured by its status)  
-delete(job id) -> optional error (job should be guaranteed to be deleted on no error response)  
-status(job id) -> status or error  
-output(job id) -> output or error  
+- `create(command, arguments) -> job id`  
+  (a job object should always be created, errors are captured by its status)  
+- `delete(job id) -> optional error`  
+  (job should be guaranteed to be deleted on no error response)  
+- `status(job id) -> status or error`  
+- `output(job id) -> output or error`  
 
 By just returning a job id on creation the creation process is fast and every created job is guaranteed
 to be available to be queried later. ....
+
+There are two approaches for the behavior and implied implementation for the job pool.
+- Lazy evaluation of job status/output
+  (when status/output functions are called, in caller's thread of execution)
+- Eager evaluation of job status/output
+  (when creating a pool a manager thread is created that continously updates 
+  running job's statuses and outputs)
+
+The job's processes themselves are of course running on their own, but their status/output
+data needs to be proactively updated by the process using the library.
+The lazy evaluation model has lower complexity, the eager evaluation model could potentially
+reduce the status/output functions' latency (depending on how the data is synchronized).
+Considering the scope of this challenge I'd opt for the lazy evaluation approach.
 
 ## Server
 
@@ -100,19 +116,23 @@ error response: 404, no body
 
 The server should only accept TLS 1.3 connections, no support for older versions
 is needed, as there are no external clients and the client can also just support TLS 1.3.
-All 3 supported cipher suites are considered secure, I'm unsure if there is an advantage
-to just supporting one of them (could pick the fastest):
-
-- CHACHA20_POLY1305_SHA256,
-- AES_256_GCM_SHA384,
-- AES_128_GCM_SHA256
+All [3 supported cipher suites](https://datatracker.ietf.org/doc/html/rfc8446#section-9.1) 
+are considered secure, 
+depending on hardware support ChaCha20Poly1305 or AES-GCM are faster 
+(see [Go blog](https://go.dev/blog/tls-cipher-suites)).
+So for the scope of this challenge I'd say to just support all of them and let the cipher
+be picked based on the defaults by the used client/server http/tls libraries.
+If optimizing for best performance, only TLS_CHACHA20_POLY1305_SHA256 and
+TLS_AES_128_GCM_SHA256 should supported and possibly one of them only.
 
 To enable mTLS the following has to be generated:
-- root CA private key + certificate
-- server private key + certificate
-- client private key + certificate (for each distinct client)
+- root CA private key + self-signed certificate
+- server private key + CA-signed certificate 
+- client private key + CA-signed certificate (for each distinct client)
 
 For the public/private key algorithm common choices are RSA and ECDSA,
 with ECDSA having shorter keys offering the same level of security.
-For this project I propose to use ECDSA 256-bit keys (P-256 curve).
-SHA-256 should be used as the digital signature algorithm, it's the most common secure choice.
+According to Mozilla's [recommended highest security configuration](https://wiki.mozilla.org/Security/Server_Side_TLS#Modern_compatibility)
+ECDSA 256-bit keys (P-256 curve) and the SHA-256 digital signature algorithm should be used.
+
+### Client
