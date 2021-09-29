@@ -47,7 +47,7 @@ There are two approaches for the behavior and implied implementation for the job
   running job's statuses and outputs)
 
 The job's processes themselves are of course running on their own, but their status/output
-data needs to be proactively updated by the process using the library.
+data needs to be proactively queried by the process using the library.
 The lazy evaluation model has lower complexity, the eager evaluation model could potentially
 reduce the status/output functions' latency (depending on how the data is synchronized).
 Considering the scope of this challenge I'd opt for the lazy evaluation approach.
@@ -112,7 +112,10 @@ success response:
 ```
 error response: 404, no body
 
-### TLS
+### Auth & TLS
+
+Clients should be authenticated with client TLS certificates.
+Certificates with different common names are treated as distinct clients.
 
 The server should only accept TLS 1.3 connections, no support for older versions
 is needed, as there are no external clients and the client can also just support TLS 1.3.

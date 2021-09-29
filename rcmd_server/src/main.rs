@@ -6,6 +6,7 @@ use std::{
 use rcmd_shared::{CommandSpec, Job, JobCreatedResponse};
 use rocket::{
     config::{CipherSuite, MutualTls, TlsConfig},
+    mtls::Certificate,
     serde::json::Json,
     Config, State,
 };
@@ -18,8 +19,8 @@ extern crate rocket;
 mod state;
 
 #[get("/")]
-fn index() -> &'static str {
-    "Hello, world!"
+fn index(cert: Certificate<'_>) -> String {
+    format!("Hello, {}!", cert.subject().common_name().unwrap())
 }
 
 #[post("/jobs", format = "json", data = "<command>")]
