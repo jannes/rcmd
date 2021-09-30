@@ -9,19 +9,7 @@ and client (CLI) implementations are given.
 The library needs to support creation, deletion and querying status info and output of jobs.
 A job is defined by a command and arguments to be executed as a process, with the output being the process's stdout/stderr.
 
-### Job status
-
-- state, one of:
-    - running
-    - error: error message
-    - completed: exit status
-
-### Job output
-
-- stdout
-- stderr
-
-### Implementation approach
+### Interface and semantics
 
 The library should support creation of a job execution pool, which serves as the single abstraction
 that is used to create, delete and query jobs. 
@@ -36,8 +24,18 @@ The following is proposed as the interface for the job pool:
 - `status(job id) -> status or error`  
 - `output(job id) -> output or error`  
 
-By just returning a job id on creation the creation process is fast and every created job is guaranteed
-to be available to be queried later. ....
+The `create` command could also have different behavior, e.g only return a job id if the process was
+created successfully, but with the proposed behavior the creation process is fast 
+and every created job is guaranteed to be available to be queried later. 
+All error cases are represented with the `status`/`output` error responses.
+
+The job status should reflect the job's state, which is one of
+- running
+- error: error message
+- completed: exit status
+
+
+### Implementation approach
 
 There are two approaches for the behavior and implied implementation for the job pool.
 - Lazy evaluation of job status/output
@@ -138,4 +136,17 @@ with ECDSA having shorter keys offering the same level of security.
 According to Mozilla's [recommended highest security configuration](https://wiki.mozilla.org/Security/Server_Side_TLS#Modern_compatibility)
 ECDSA 256-bit keys (P-256 curve) and the SHA-256 digital signature algorithm should be used.
 
-### Client
+## Client
+
+The client should allow connecting to remote machines that run the server binary 
+and it should expose the API calls as CLI commands.
+
+Examples:
+```
+./rcmd certificate-directory my-server:8080 exec echo hi
+$ 1
+./rcmd certificate-directory my-server:8080 status 1
+$ Completed, exit status: 0
+./rcmd certificate-directory my-server:8080 output 1
+$ hi
+```
