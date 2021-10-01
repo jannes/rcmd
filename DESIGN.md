@@ -15,7 +15,7 @@ The library should support creation of a job execution pool, which serves as the
 that is used to create, delete and query jobs. 
 The job pool is responsible for keeping and updating the states of the created jobs.
 
-The following is proposed as the interface for the job pool:
+The following is proposed as the interface for the job pool (which must be thread-safe):
 
 - `create(command, arguments) -> job id`  
   (a job object should always be created, errors are captured by its status)  
@@ -34,7 +34,6 @@ The job status should reflect the job's state, which is one of
 - error: error message
 - completed: exit status
 
-
 ### Implementation approach
 
 There are two approaches for the behavior and implied implementation for the job pool.
@@ -49,6 +48,12 @@ data needs to be proactively queried by the process using the library.
 The lazy evaluation model has lower complexity, the eager evaluation model could potentially
 reduce the status/output functions' latency (depending on how the data is synchronized).
 Considering the scope of this challenge I'd opt for the lazy evaluation approach.
+
+As all operations on the job pool must be thread-safe, the internal collection of jobs
+must be synchronized. As a single job pool should be used by a single client and
+high performance is not a requirement, I propose to just use a single lock to protect the
+whole collection of jobs. This makes the code less complex at the cost of limiting clients
+having their commands being submitted/queried in parallel.
 
 ## Server
 
@@ -110,6 +115,20 @@ success response:
 ```
 error response: 404, no body
 
+### Implementation approach
+
+The server makes use of the library to create job pools for each client on their
+first job creation request. The collection of job pools must be synchronized as
+multiple clients may be calling the API concurrently.
+Since all client requests after the first one do not cause the creation of a new job
+pool, I propose to synchronize the collection of job pools with the use of a single read-write lock.
+Using a read-write lock allows for multiple clients to make requests concurrently,
+as long as no single new client issues a first request. 
+This approach is again very simple at the cost of not being scalable for a large number of clients.
+However, for the scope of this project I believe it is good enough.
+To achieve higher scalability a more sophisticated thread-safe collection should be used 
+(the same holds for the job pool's internal job collection).
+
 ### Auth & TLS
 
 Clients should be authenticated with client TLS certificates.
@@ -140,6 +159,10 @@ ECDSA 256-bit keys (P-256 curve) and the SHA-256 digital signature algorithm sho
 
 The client should allow connecting to remote machines that run the server binary 
 and it should expose the API calls as CLI commands.
+A client identifies itself with a TLS certificate + private key 
+and it needs to know the root CA that signed the server's TLS certificate.
+These should all be passed as arguments for simplicity (as opposed to configuring
+some location on the local system).
 
 Examples:
 ```
