@@ -6,4 +6,7 @@ version = "0.1.0"
 [dependencies]
 serde = {version = "1.0", features = ["derive"]}
 serde_json = "1.0"
-tokio = {version = "1.12", features = ["process", "rt-multi-thread", "sync", "io-util"]}
+tokio = {version = "1.12", features = ["process", "rt-multi-thread", "sync", "io-util", "time"]}
+
+[dev-dependencies]
+lazy_static = "1.4.0"

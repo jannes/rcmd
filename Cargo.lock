@@ -1057,6 +1057,7 @@ dependencies = [
 name = "rcmd_lib"
 version = "0.1.0"
 dependencies = [
+ "lazy_static",
  "serde",
  "serde_json",
  "tokio",
