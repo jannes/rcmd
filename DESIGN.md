@@ -1,8 +1,8 @@
 # Design Document for Level 2 - Teleport Challenge
 
 This document aims to deliver a concise technical design proposal for the Level 2 challenge.
-Implementation approaches and design choices for the library, server (HTTP API) 
-and client (CLI) implementations are given.
+Specifications of interfaces, implementation approaches and design choices for 
+the library, server (HTTP API) and client (CLI) implementations are given.
 
 ## Library
 
@@ -11,7 +11,7 @@ A job is defined by a command and arguments to be executed as a process, with th
 
 ### Interface and semantics
 
-The library should support creation of a job execution pool, which serves as the single abstraction
+The library should support creation of a job pool, which serves as the single abstraction
 that is used to create, delete and query jobs. 
 The job pool is responsible for keeping and updating the states of the created jobs.
 
@@ -19,24 +19,35 @@ The following is proposed as the interface for the job pool (which must be threa
 
 - `create(command, arguments) -> job id`  
   (a job object should always be created, errors are captured by its status)  
+- `list() -> list of job ids`
 - `delete(job id) -> optional error`  
   (job should be guaranteed to be deleted on no error response)  
 - `status(job id) -> status or error`  
 - `output(job id) -> output or error`  
 
-The `create` command could also have different behavior, e.g only return a job id if the process was
-created successfully, but with the proposed behavior the creation process is fast 
+The `create` command could also have different behavior, 
+e.g only return a job id if the process was created successfully, 
+but with the proposed behavior the creation command is fast 
 and every created job is guaranteed to be available to be queried later. 
-All error cases are represented with the `status`/`output` error responses.
+All error cases are represented by the job's status.
 
-The job status should reflect the job's state, which is one of
+A job's `status` should reflect the job's state, which is one of
 - running
-- error: error message
+- error: error message  
+  (e.g command doesn't exist, process could not be spawned due to OS limits)
 - completed: exit status
+- killed (terminated with SIGKILL)
+
+The `delete` command should kill (SIGKILL, as that guarantees the process' termination) 
+the process if in running state and remove the job from the job pool.
+
+With a bigger scope I would improve the API by splitting termination of a job and
+removal from the job pool into different commands, with the termination command
+supporting different kinds of termination signal (e.g SIGINT, SIGTERM etc.).
 
 ### Implementation approach
 
-There are two approaches for the behavior and implied implementation for the job pool.
+There are at least two approaches for the behavior of the job pool w.r.t query operations.
 - Lazy evaluation of job status/output
   (when status/output functions are called, in caller's thread of execution)
 - Eager evaluation of job status/output
@@ -58,12 +69,12 @@ having their commands being submitted/queried in parallel.
 ## Server
 
 The server should expose the library's operations through a HTTPS API secured with mTLS.
-Each distinct client should have a access only to the created jobs by itself.
+Each distinct client should have access only to the created jobs by itself.
 
 ### API
 
 #### Create
-endpoint: `PUT /jobs`  
+`PUT /jobs`  
 request body: 
 ```
 {
@@ -71,29 +82,30 @@ request body:
     "args": [arg1, arg2, ...]
 }
 ```
-response:  
+response: 201, with body:  
 ```
 { 
     "id": <id> 
 }
 ```
 
-### Delete
-endpoint: `DELETE /jobs/<id>`  
-no request body  
-success response: 200, no body  
-error response: 
-some error code
+#### List
+`GET /jobs`  
+response: 200, with body:  
 ```
-{
-    "error": <message describing error> (e.g command doesn't exist)
+{ 
+    "ids": [<id1>, <id2>, ...]
 }
 ```
 
+#### Delete
+`DELETE /jobs/<id>`  
+success response: 200  
+error response: 404 when job doesn't exist
+
 #### Status
-endpoint: `GET /jobs/<id>/status`  
-no request body  
-success response:  
+`GET /jobs/<id>/status`  
+success response: 200, with body:  
 ```
 { 
     "status": "running"/"error"/"completed"
@@ -101,19 +113,18 @@ success response:
     "exit_code": ... (optional, set on completed)
 }
 ```
-error response: 404, no body
+error response: 404 when job doesn't exist
 
 #### Output
-endpoint: `GET /jobs/<id>/output`  
-no request body  
-success response:  
+`GET /jobs/<id>/output`  
+success response: 200, with body:  
 ```
 { 
     "stdout": "..." (empty for jobs in error state)
     "stderr": "..." (empty for jobs in error state)
 }
 ```
-error response: 404, no body
+error response: 404 when job doesn't exist
 
 ### Implementation approach
 
@@ -129,7 +140,7 @@ However, for the scope of this project I believe it is good enough.
 To achieve higher scalability a more sophisticated thread-safe collection should be used 
 (the same holds for the job pool's internal job collection).
 
-### Auth & TLS
+### Security - TLS/Auth
 
 Clients should be authenticated with client TLS certificates.
 Certificates with different common names are treated as distinct clients.
