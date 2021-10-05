@@ -1,14 +1,6 @@
-use std::{
-    collections::HashMap,
-    process::Stdio,
-    sync::{atomic::AtomicU64, Arc},
-};
+use std::{collections::HashMap, process::Stdio, sync::{atomic::AtomicU64, Arc}, time::{Duration, SystemTime}};
 
-use tokio::{
-    io::AsyncReadExt,
-    process::{Child, Command},
-    sync::Mutex,
-};
+use tokio::{io::{self, AsyncReadExt}, process::{Child, Command}, sync::Mutex, time::sleep};
 
 pub struct CommandSpec {
     pub cmd: String,
@@ -113,7 +105,7 @@ impl JobPool {
         let mut jobs = self.jobs.lock().await;
         let job = jobs.get_mut(&id)?;
         match &mut job.state {
-            JobState::Running { process } => Some(get_outstreams(process).await),
+            JobState::Running { process } => get_outstreams(process).await.ok(),
             JobState::Completed { exit_code: _, output } => Some(output.clone()),
             JobState::Terminated { output } => Some(output.clone()),
             JobState::Error { msg: _ } => None,
@@ -130,16 +122,16 @@ impl JobPool {
                     let output = get_outstreams(&mut process).await;
                     JobState::Completed {
                         exit_code: exit_status.code().unwrap(),
-                        output,
+                        output: output.unwrap(),
                     }
                 }
                 Ok(Some(_exit_status)) => {
                     let output = get_outstreams(&mut process).await;
-                    JobState::Terminated { output }
+                    JobState::Terminated { output: output.unwrap() }
                 }
                 Ok(None) => {
                     let output = get_outstreams(&mut process).await;
-                    JobState::Terminated { output }
+                    JobState::Terminated { output: output.unwrap() }
                 }
                 Err(err) => JobState::Error {
                     msg: format!("error: {}", err),
@@ -153,23 +145,46 @@ impl JobPool {
     }
 }
 
-async fn get_outstreams(process: &mut Child) -> JobOutput {
+async fn get_outstreams(process: &mut Child) -> io::Result<JobOutput> {
+    dbg!("get outstream start: {:?}", SystemTime::now());
     let stdout = if let Some(stdout) = &mut process.stdout {
-        let mut buffer = String::new();
-        stdout.read_to_string(&mut buffer).await.unwrap();
-        Some(buffer)
+        let mut buffer: Vec<u8> = Vec::new();
+        loop {
+             tokio::select! {
+                result = stdout.read(&mut buffer) => {
+                    let _bytes_read = result?;
+                }
+                _ = sleep(Duration::from_millis(10)) => {
+                    break;
+                }
+             };
+        }
+        let text = String::from_utf8(buffer).unwrap_or_else(|_| "NON-UTF8".to_string());
+        Some(text)
     } else {
         None
     };
-    let stderr = if let Some(stdout) = &mut process.stderr {
-        let mut buffer = String::new();
-        stdout.read_to_string(&mut buffer).await.unwrap();
-        Some(buffer)
+    let stderr = if let Some(stderr) = &mut process.stderr {
+        let mut buffer: Vec<u8> = Vec::new();
+        loop {
+           tokio::select! {
+                result = stderr.read(&mut buffer) => {
+                    let _bytes_read = result?;
+                }
+                _ = sleep(Duration::from_millis(10)) => {
+                    break;
+                }
+             };
+        }
+        let text = String::from_utf8(buffer).unwrap_or_else(|_| "NON-UTF8".to_string());
+        Some(text)
     } else {
         None
     };
-    JobOutput { stdout, stderr }
+    dbg!("get outstream end: {:?}", SystemTime::now());
+    Ok(JobOutput { stdout, stderr })
 }
+
 
 impl Default for JobPool {
     fn default() -> Self {
@@ -179,7 +194,7 @@ impl Default for JobPool {
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use lazy_static::lazy_static;
 
@@ -226,8 +241,11 @@ mod test {
     fn test_status_deleted() {
         let pool = JobPool::new();
         RUNTIME.block_on(async {
-            let id = pool.submit("sleep", &["100"]).await;
+            dbg!("submit: {:?}", SystemTime::now());
+            let id = pool.submit("sleep", &["5"]).await;
+            dbg!("status: {:?}", SystemTime::now());
             let status = pool.status(id).await;
+            dbg!("assert: {:?}", SystemTime::now());
             assert!(status.is_some());
             let status = status.unwrap();
             assert_eq!(JobStatus::Running, status);
