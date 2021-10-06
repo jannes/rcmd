@@ -160,7 +160,7 @@ impl JobPool {
                     let output = output.unwrap();
                     dbg!("exit code {:?}", output.clone());
                     job.output.append(output);
-                    JobState::Terminated
+                    JobState::Running { process }
                 }
                 Err(err) => JobState::Error {
                     msg: format!("error: {}", err),
@@ -179,15 +179,18 @@ async fn get_outstreams(process: &mut Child) -> io::Result<JobOutput> {
     let stdout = if let Some(stdout) = &mut process.stdout {
         let mut buffer = [0; 512];
         let mut text = Vec::new();
-        loop {
+        'l: loop {
             tokio::select! {
-               result = stdout.read(&mut buffer) => {
-                   let bytes_read = result?;
-                   text.extend_from_slice(&buffer[0..bytes_read]);
-               }
-               _ = sleep(Duration::from_millis(5)) => {
-                   break;
-               }
+                result = stdout.read(&mut buffer) => {
+                    let bytes_read = result?;
+                    if bytes_read == 0 {
+                        break 'l;
+                    }
+                    text.extend_from_slice(&buffer[0..bytes_read]);
+                }
+                _ = sleep(Duration::from_millis(5)) => {
+                    break 'l;
+                }
             };
         }
         let text = String::from_utf8(text).unwrap_or_else(|_| "NON-UTF8".to_string());
@@ -196,18 +199,23 @@ async fn get_outstreams(process: &mut Child) -> io::Result<JobOutput> {
         None
     };
     let stderr = if let Some(stderr) = &mut process.stderr {
-        let mut buffer: Vec<u8> = Vec::new();
-        loop {
+        let mut buffer = [0; 512];
+        let mut text = Vec::new();
+        'l2: loop {
             tokio::select! {
-               result = stderr.read(&mut buffer) => {
-                   let _bytes_read = result?;
-               }
-               _ = sleep(Duration::from_millis(5)) => {
-                   break;
-               }
+                result = stderr.read(&mut buffer) => {
+                    let bytes_read = result?;
+                    if bytes_read == 0 {
+                        break 'l2;
+                    }
+                    text.extend_from_slice(&buffer[0..bytes_read]);
+                }
+                _ = sleep(Duration::from_millis(5)) => {
+                    break 'l2;
+                }
             };
         }
-        let text = String::from_utf8(buffer).unwrap_or_else(|_| "NON-UTF8".to_string());
+        let text = String::from_utf8(text).unwrap_or_else(|_| "NON-UTF8".to_string());
         Some(text)
     } else {
         None
@@ -244,7 +252,7 @@ mod test {
         let pool = JobPool::new();
         RUNTIME.block_on(async {
             let id = pool.submit("echo", &["hi"]).await;
-            sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(1000)).await;
             let output = pool.output(id).await;
             assert!(output.is_some());
             let output = output.unwrap();
@@ -257,7 +265,7 @@ mod test {
         let pool = JobPool::new();
         RUNTIME.block_on(async {
             let id = pool.submit("ls", &[]).await;
-            sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(1000)).await;
             let status = pool.status(id).await;
             assert!(status.is_some());
             let status = status.unwrap();
