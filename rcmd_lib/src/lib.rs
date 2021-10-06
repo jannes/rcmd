@@ -1,16 +1,40 @@
-use std::{collections::HashMap, process::Stdio, sync::{atomic::AtomicU64, Arc}, time::{Duration, SystemTime}};
+use std::{
+    collections::HashMap,
+    process::Stdio,
+    sync::{atomic::AtomicU64, Arc},
+    time::{Duration, SystemTime},
+};
 
-use tokio::{io::{self, AsyncReadExt}, process::{Child, Command}, sync::Mutex, time::sleep};
+use tokio::{
+    io::{self, AsyncReadExt},
+    process::{Child, Command},
+    sync::Mutex,
+    time::sleep,
+};
 
 pub struct CommandSpec {
     pub cmd: String,
     pub args: Vec<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct JobOutput {
-    stdout: Option<String>,
-    stderr: Option<String>,
+    stdout: String,
+    stderr: String,
+}
+
+impl JobOutput {
+    pub fn new() -> Self {
+        Self {
+            stdout: "".to_string(),
+            stderr: "".to_string(),
+        }
+    }
+
+    pub fn append(&mut self, output: JobOutput) {
+        self.stdout.push_str(&output.stdout);
+        self.stderr.push_str(&output.stderr);
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -25,10 +49,10 @@ impl From<&JobState> for JobStatus {
     fn from(state: &JobState) -> Self {
         match state {
             JobState::Running { process: _ } => JobStatus::Running,
-            JobState::Completed { exit_code, output: _ } => JobStatus::Completed {
+            JobState::Completed { exit_code } => JobStatus::Completed {
                 exit_code: *exit_code,
             },
-            JobState::Terminated { output: _ } => JobStatus::Terminated,
+            JobState::Terminated => JobStatus::Terminated,
             JobState::Error { msg } => JobStatus::Error {
                 msg: msg.to_string(),
             },
@@ -38,14 +62,15 @@ impl From<&JobState> for JobStatus {
 
 enum JobState {
     Running { process: Child },
-    Completed { exit_code: i32, output: JobOutput },
-    Terminated { output: JobOutput },
+    Completed { exit_code: i32 },
+    Terminated,
     Error { msg: String },
 }
 
 struct Job {
     id: u64,
     state: JobState,
+    output: JobOutput,
 }
 
 pub struct JobPool {
@@ -76,7 +101,8 @@ impl JobPool {
                 msg: err.to_string(),
             },
         };
-        let job = Job { id, state };
+        let output = JobOutput::new();
+        let job = Job { id, state, output };
         self.jobs.lock().await.insert(id, job);
         id
     }
@@ -104,12 +130,7 @@ impl JobPool {
         self.update_job_state(&id).await?;
         let mut jobs = self.jobs.lock().await;
         let job = jobs.get_mut(&id)?;
-        match &mut job.state {
-            JobState::Running { process } => get_outstreams(process).await.ok(),
-            JobState::Completed { exit_code: _, output } => Some(output.clone()),
-            JobState::Terminated { output } => Some(output.clone()),
-            JobState::Error { msg: _ } => None,
-        }
+        Some(job.output.clone())
     }
 
     async fn update_job_state(&self, id: &u64) -> Option<()> {
@@ -120,18 +141,26 @@ impl JobPool {
             JobState::Running { mut process } => match process.try_wait() {
                 Ok(Some(exit_status)) if exit_status.code().is_some() => {
                     let output = get_outstreams(&mut process).await;
+                    let output = output.unwrap();
+                    dbg!("exit code {:?}", output.clone());
+                    job.output.append(output);
                     JobState::Completed {
                         exit_code: exit_status.code().unwrap(),
-                        output: output.unwrap(),
                     }
                 }
                 Ok(Some(_exit_status)) => {
                     let output = get_outstreams(&mut process).await;
-                    JobState::Terminated { output: output.unwrap() }
+                    let output = output.unwrap();
+                    dbg!("exit code {:?}", output.clone());
+                    job.output.append(output);
+                    JobState::Terminated
                 }
                 Ok(None) => {
                     let output = get_outstreams(&mut process).await;
-                    JobState::Terminated { output: output.unwrap() }
+                    let output = output.unwrap();
+                    dbg!("exit code {:?}", output.clone());
+                    job.output.append(output);
+                    JobState::Terminated
                 }
                 Err(err) => JobState::Error {
                     msg: format!("error: {}", err),
@@ -148,18 +177,20 @@ impl JobPool {
 async fn get_outstreams(process: &mut Child) -> io::Result<JobOutput> {
     dbg!("get outstream start: {:?}", SystemTime::now());
     let stdout = if let Some(stdout) = &mut process.stdout {
-        let mut buffer: Vec<u8> = Vec::new();
+        let mut buffer = [0; 512];
+        let mut text = Vec::new();
         loop {
-             tokio::select! {
-                result = stdout.read(&mut buffer) => {
-                    let _bytes_read = result?;
-                }
-                _ = sleep(Duration::from_millis(10)) => {
-                    break;
-                }
-             };
+            tokio::select! {
+               result = stdout.read(&mut buffer) => {
+                   let bytes_read = result?;
+                   text.extend_from_slice(&buffer[0..bytes_read]);
+               }
+               _ = sleep(Duration::from_millis(5)) => {
+                   break;
+               }
+            };
         }
-        let text = String::from_utf8(buffer).unwrap_or_else(|_| "NON-UTF8".to_string());
+        let text = String::from_utf8(text).unwrap_or_else(|_| "NON-UTF8".to_string());
         Some(text)
     } else {
         None
@@ -167,14 +198,14 @@ async fn get_outstreams(process: &mut Child) -> io::Result<JobOutput> {
     let stderr = if let Some(stderr) = &mut process.stderr {
         let mut buffer: Vec<u8> = Vec::new();
         loop {
-           tokio::select! {
-                result = stderr.read(&mut buffer) => {
-                    let _bytes_read = result?;
-                }
-                _ = sleep(Duration::from_millis(10)) => {
-                    break;
-                }
-             };
+            tokio::select! {
+               result = stderr.read(&mut buffer) => {
+                   let _bytes_read = result?;
+               }
+               _ = sleep(Duration::from_millis(5)) => {
+                   break;
+               }
+            };
         }
         let text = String::from_utf8(buffer).unwrap_or_else(|_| "NON-UTF8".to_string());
         Some(text)
@@ -182,9 +213,11 @@ async fn get_outstreams(process: &mut Child) -> io::Result<JobOutput> {
         None
     };
     dbg!("get outstream end: {:?}", SystemTime::now());
-    Ok(JobOutput { stdout, stderr })
+    Ok(JobOutput {
+        stdout: stdout.unwrap_or_else(|| "".to_string()),
+        stderr: stderr.unwrap_or_else(|| "".to_string()),
+    })
 }
-
 
 impl Default for JobPool {
     fn default() -> Self {
@@ -215,7 +248,7 @@ mod test {
             let output = pool.output(id).await;
             assert!(output.is_some());
             let output = output.unwrap();
-            assert_eq!(Some("hi\n".to_string()), output.stdout)
+            assert_eq!("hi\n".to_string(), output.stdout)
         });
     }
 
@@ -230,8 +263,7 @@ mod test {
             let status = status.unwrap();
             if let JobStatus::Completed { exit_code } = status {
                 assert_eq!(0, exit_code)
-            }
-            else {
+            } else {
                 panic!("unexpected job status: {:?}", status);
             }
         });
