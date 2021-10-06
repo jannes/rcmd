@@ -12,6 +12,8 @@ use tokio::{
     time::sleep,
 };
 
+mod util;
+
 pub struct CommandSpec {
     pub cmd: String,
     pub args: Vec<String>,
@@ -289,6 +291,32 @@ mod test {
             assert!(status.is_some());
             let status = status.unwrap();
             assert_eq!(JobStatus::Running, status);
+            let err = pool.delete(id).await;
+            assert_eq!(None, err);
+            let status = pool.status(id).await;
+            assert!(status.is_none());
+        });
+    }
+
+    #[test]
+    fn test_output_long_running() {
+        let pool = JobPool::new();
+        RUNTIME.block_on(async {
+            let id = pool.submit("bash", &["-c", "while true; do echo hi; sleep 1; done"]).await;
+            sleep(Duration::from_millis(1000)).await;
+
+            let status = pool.status(id).await;
+            assert!(status.is_some());
+            let status = status.unwrap();
+            assert_eq!(JobStatus::Running, status);
+            let output = pool.output(id).await.unwrap();
+            assert_eq!("hi\n", &output.stdout);
+            sleep(Duration::from_millis(1000)).await;
+
+            let output = pool.output(id).await.unwrap();
+            assert_eq!("hi\nhi\n", &output.stdout);
+            sleep(Duration::from_millis(1000)).await;
+
             let err = pool.delete(id).await;
             assert_eq!(None, err);
             let status = pool.status(id).await;
