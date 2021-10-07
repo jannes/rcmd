@@ -1,41 +1,39 @@
 use std::process::ExitStatus;
 
-use tokio::{
-    io::{self, AsyncBufReadExt, AsyncRead, BufReader},
-    process::Child,
-    sync::mpsc,
-};
+use tokio::{io::{self, AsyncBufReadExt, AsyncRead, BufReader}, process::Child, sync::{mpsc, oneshot}};
 
 pub async fn manage_process(
     mut process: Child,
     stdout_channel: mpsc::Sender<String>,
     stderr_channel: mpsc::Sender<String>,
     exit_channel: mpsc::Sender<io::Result<ExitStatus>>,
-    mut kill_channel: mpsc::Receiver<()>,
+    kill_channel: oneshot::Receiver<()>,
 ) {
     let stdout = process.stdout.take().unwrap();
     let stderr = process.stderr.take().unwrap();
 
     // continously read from stdout/stderr in background
-    let _ = tokio::spawn(async { read_to_end(stdout, stdout_channel) });
-    let _ = tokio::spawn(async {
-        read_to_end(stderr, stderr_channel).await;
-    });
+    let stdout_handle = tokio::spawn(read_to_end(stdout, stdout_channel));
+    let stderr_handle = tokio::spawn(read_to_end(stderr, stderr_channel));
 
     // either wait for proces to finish or receive a terminate command
     tokio::select! {
         _ = process.wait() => { }
-        _ = kill_channel.recv() => {
-            if let Err(e) = process.kill().await {
+        _ = kill_channel => {
+            if let Err(kill_error) = process.kill().await {
                 todo!()
             }
-            kill_channel.close()
         }
     }
 
     // wait for process to finish, send exit status / error on exit channel
-    let res = exit_channel.send(process.wait().await).await;
-    if let Err(send_error) = res {
+    if let Err(join_error) = stdout_handle.await {
+        todo!()
+    }
+    if let Err(join_error) = stderr_handle.await {
+        todo!()
+    }
+    if let Err(send_error) = exit_channel.send(process.wait().await).await {
         todo!()
     }
 }
@@ -50,11 +48,10 @@ async fn read_to_end<A: AsyncRead + std::marker::Unpin>(
         match reader.read_line(&mut buf).await {
             Ok(n) if n == 0 => break,
             Ok(_) => {}
-            Err(_) => todo!(),
+            Err(io_error) => todo!(),
         }
-        match out_channel.send(buf).await {
-            Ok(_) => todo!(),
-            Err(_) => todo!(),
+        if let Err(send_error) = out_channel.send(buf).await {
+            todo!()
         }
     }
 }
