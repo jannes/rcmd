@@ -6,15 +6,20 @@ use tokio::{
     sync::{mpsc, oneshot},
     time::Instant,
 };
-use tracing::{debug, error};
+use tracing::{debug, error, info, instrument};
 
+/// setup tasks to forward stdout/stderr to given channels
+/// waits for process exiting or kill signal before sending exit status on given channel
+#[instrument(skip(process, stdout_channel, stderr_channel, exit_channel, kill_signal))]
 pub async fn manage_process(
+    job_id: u64,
     mut process: Child,
     stdout_channel: mpsc::UnboundedSender<(String, Instant)>,
     stderr_channel: mpsc::UnboundedSender<(String, Instant)>,
     exit_channel: oneshot::Sender<io::Result<ExitStatus>>,
     kill_signal: oneshot::Receiver<()>,
 ) {
+    info!("start managing process with pid: {:?}", process.id());
     let stdout = process.stdout.take().unwrap();
     let stderr = process.stderr.take().unwrap();
 
@@ -24,8 +29,9 @@ pub async fn manage_process(
 
     // wait for either process to finish or receival of terminate command
     tokio::select! {
-        _ = process.wait() => { }
+        _ = process.wait() => info!("process exited"),
         recv_res = kill_signal => {
+            info!("received kill signal");
             if let Err(_recv_err) = recv_res {
                 // this would happen when job pool was dropped
                 debug!("kill channel receive error, sender dropped, pid: {:?}", process.id());
