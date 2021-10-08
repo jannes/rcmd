@@ -6,6 +6,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     time::Instant,
 };
+use tracing::{debug, error};
 
 pub async fn manage_process(
     mut process: Child,
@@ -24,22 +25,38 @@ pub async fn manage_process(
     // wait for either process to finish or receival of terminate command
     tokio::select! {
         _ = process.wait() => { }
-        _ = kill_signal => {
+        recv_res = kill_signal => {
+            if let Err(_recv_err) = recv_res {
+                // this would happen when job pool was dropped
+                debug!("kill channel receive error, sender dropped, pid: {:?}", process.id());
+            }
             if let Err(kill_error) = process.kill().await {
-                println!{"unexpected error when killing process, pid: {:?}, err: {}", process.id(), kill_error};
+                error!("unexpected error when killing process, pid: {:?}, err: {}", process.id(), kill_error);
             }
         }
     }
 
     // wait for process to finish, send exit status / error on exit channel
     if let Err(join_error) = stdout_handle.await {
-        println! {"unexpected error when joining stdout, pid: {:?}, err: {}", process.id(), join_error};
+        error!(
+            "unexpected error when joining stdout, pid: {:?}, err: {}",
+            process.id(),
+            join_error
+        );
     }
     if let Err(join_error) = stderr_handle.await {
-        println! {"unexpected error when joining stderr, pid: {:?}, err: {}", process.id(), join_error};
+        error!(
+            "unexpected error when joining stderr, pid: {:?}, err: {}",
+            process.id(),
+            join_error
+        );
     }
     if let Err(_unsent) = exit_channel.send(process.wait().await) {
-        println! {"unexpected closed channel when sending exit result, pid: {:?}", process.id()};
+        // this would happen when job pool was dropped
+        debug!(
+            "closed channel when sending exit result, pid: {:?}",
+            process.id()
+        );
     }
 }
 

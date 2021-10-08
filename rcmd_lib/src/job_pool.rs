@@ -14,8 +14,12 @@ use tokio::{
     },
     time::Instant,
 };
+use tracing::{debug, info};
 
-use crate::{job::{JobOutput, JobStatus}, util::{manage_process, receive_all_lines, receive_lines_until}};
+use crate::{
+    job::{JobOutput, JobStatus},
+    util::{manage_process, receive_all_lines, receive_lines_until},
+};
 
 impl From<&JobState> for JobStatus {
     fn from(state: &JobState) -> Self {
@@ -49,7 +53,7 @@ enum JobState {
 }
 
 struct Job {
-    id: u64,
+    pid: Option<u32>,
     state: JobState,
     output: JobOutput,
 }
@@ -81,13 +85,16 @@ impl JobPool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
+        let mut pid = None;
         let state = match process {
             Ok(process) => {
+                pid = process.id();
                 // channels for std streams, exit and kill signal
                 let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<(String, Instant)>();
                 let (stderr_tx, stderr_rx) = mpsc::unbounded_channel::<(String, Instant)>();
                 let (exit_tx, exit_rx) = oneshot::channel::<io::Result<ExitStatus>>();
                 let (kill_tx, kill_rx) = oneshot::channel::<()>();
+                debug!("start managing process with pid {:?}", pid);
                 // spawn manager task that updates stream/exit channels and listens for kill signal
                 let _ = tokio::spawn(manage_process(
                     process, stdout_tx, stderr_tx, exit_tx, kill_rx,
@@ -99,12 +106,15 @@ impl JobPool {
                     kill_tx,
                 }
             }
-            Err(err) => JobState::Error {
-                msg: err.to_string(),
-            },
+            Err(err) => {
+                info!("process could not be spawned, error: {:?}", err);
+                JobState::Error {
+                    msg: err.to_string(),
+                }
+            }
         };
         let output = JobOutput::new();
-        let job = Job { id, state, output };
+        let job = Job { pid, state, output };
         self.jobs.lock().await.insert(id, job);
         id
     }
@@ -116,7 +126,7 @@ impl JobPool {
         let job = jobs.remove(&id)?;
         if let JobState::Running { .. } = job.state {
             let job = self.update_job_state(job, true).await;
-            if let JobState::Error{msg} = job.state {
+            if let JobState::Error { msg } = job.state {
                 println!("deletion resulted in error state: {}", msg);
             }
         }
@@ -213,20 +223,26 @@ async fn finish_job(
         Ok(exit_status) if exit_status.code().is_some() => {
             let exit_code = exit_status.code().unwrap();
             (JobState::Completed { exit_code }, job_output)
-        },
+        }
         Ok(_exit_status) => (JobState::Terminated, job_output),
         Err(io_err) => {
             let error_state = JobState::Error {
-                msg: format!("unexpected io error when waiting for job process {:?}", io_err),
+                msg: format!(
+                    "unexpected io error when waiting for job process {:?}",
+                    io_err
+                ),
             };
             (error_state, job_output)
-        },
+        }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::time::{Duration, SystemTime};
+    use std::{
+        sync::Once,
+        time::{Duration, SystemTime},
+    };
 
     use lazy_static::lazy_static;
 
@@ -236,14 +252,21 @@ mod test {
 
     use super::JobPool;
 
-
     lazy_static! {
         static ref RUNTIME: Runtime = Runtime::new().unwrap();
+    }
+    static INIT: Once = Once::new();
+
+    pub fn setup() {
+        INIT.call_once(|| {
+            tracing_subscriber::fmt::init();
+        });
     }
 
     // testing output of oneshot echo command
     #[test]
     fn test_output_echo() {
+        setup();
         let pool = JobPool::new();
         RUNTIME.block_on(async {
             let id = pool.submit("echo", &["hi"]).await;
@@ -258,6 +281,7 @@ mod test {
     // testing status of oneshot ls command
     #[test]
     fn test_status_ls() {
+        setup();
         let pool = JobPool::new();
         RUNTIME.block_on(async {
             let id = pool.submit("ls", &[]).await;
@@ -276,13 +300,11 @@ mod test {
     // testing status of sleep job before and after delete
     #[test]
     fn test_status_sleep_deleted() {
+        setup();
         let pool = JobPool::new();
         RUNTIME.block_on(async {
-            dbg!("submit: {:?}", SystemTime::now());
             let id = pool.submit("sleep", &["5"]).await;
-            dbg!("status: {:?}", SystemTime::now());
             let status = pool.status(id).await;
-            dbg!("assert: {:?}", SystemTime::now());
             assert!(status.is_some());
             let status = status.unwrap();
             assert_eq!(JobStatus::Running, status);
@@ -296,6 +318,7 @@ mod test {
     // testing output of echo loop
     #[test]
     fn test_output_repeated_echo() {
+        setup();
         let pool = JobPool::new();
         RUNTIME.block_on(async {
             let id = pool
@@ -319,6 +342,23 @@ mod test {
             assert_eq!(None, err);
             let status = pool.status(id).await;
             assert!(status.is_none());
+        });
+    }
+
+    // testing invalid command
+    #[test]
+    fn test_invalid_command() {
+        let pool = JobPool::new();
+        RUNTIME.block_on(async {
+            let id = pool.submit("abcdfg", &[]).await;
+
+            let status = pool.status(id).await;
+            assert!(status.is_some());
+            let status = status.unwrap();
+            match status {
+                JobStatus::Error { msg: _ } => {}
+                s => panic!("expected error job status, got: {:?}", s),
+            }
         });
     }
 }
