@@ -1,16 +1,25 @@
+use core::panic;
 use std::{
     collections::HashMap,
-    process::Stdio,
+    process::{exit, ExitStatus, Stdio},
     sync::{atomic::AtomicU64, Arc},
     time::{Duration, SystemTime},
 };
 
+use serde::de::value::StrDeserializer;
 use tokio::{
     io::{self, AsyncReadExt},
     process::{Child, Command},
-    sync::Mutex,
-    time::sleep,
+    sync::{
+        mpsc::{self, UnboundedReceiver},
+        oneshot::{self, Receiver, Sender},
+        Mutex,
+    },
+    time::{sleep, Instant},
 };
+use util::{manage_process, receive_lines_until};
+
+use crate::util::receive_all_lines;
 
 mod util;
 
@@ -21,21 +30,29 @@ pub struct CommandSpec {
 
 #[derive(Clone, Debug)]
 pub struct JobOutput {
-    stdout: String,
-    stderr: String,
+    stdout_lines: Vec<String>,
+    stderr_lines: Vec<String>,
 }
 
 impl JobOutput {
     pub fn new() -> Self {
         Self {
-            stdout: "".to_string(),
-            stderr: "".to_string(),
+            stdout_lines: Vec::new(),
+            stderr_lines: Vec::new(),
         }
     }
 
-    pub fn append(&mut self, output: JobOutput) {
-        self.stdout.push_str(&output.stdout);
-        self.stderr.push_str(&output.stderr);
+    pub fn append(&mut self, mut stdout_lines: Vec<String>, mut stderr_lines: Vec<String>) {
+        self.stdout_lines.append(&mut stdout_lines);
+        self.stderr_lines.append(&mut stderr_lines);
+    }
+
+    pub fn stdout(&self) -> String {
+        self.stdout_lines.join("\n")
+    }
+
+    pub fn stderr(&self) -> String {
+        self.stderr_lines.join("\n")
     }
 }
 
@@ -50,7 +67,7 @@ pub enum JobStatus {
 impl From<&JobState> for JobStatus {
     fn from(state: &JobState) -> Self {
         match state {
-            JobState::Running { process: _ } => JobStatus::Running,
+            JobState::Running { .. } => JobStatus::Running,
             JobState::Completed { exit_code } => JobStatus::Completed {
                 exit_code: *exit_code,
             },
@@ -63,10 +80,19 @@ impl From<&JobState> for JobStatus {
 }
 
 enum JobState {
-    Running { process: Child },
-    Completed { exit_code: i32 },
+    Running {
+        stdout_rx: UnboundedReceiver<(String, Instant)>,
+        stderr_rx: UnboundedReceiver<(String, Instant)>,
+        exit_rx: Receiver<io::Result<ExitStatus>>,
+        kill_tx: oneshot::Sender<()>,
+    },
+    Completed {
+        exit_code: i32,
+    },
     Terminated,
-    Error { msg: String },
+    Error {
+        msg: String,
+    },
 }
 
 struct Job {
@@ -97,8 +123,22 @@ impl JobPool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
+        let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<(String, Instant)>();
+        let (stderr_tx, stderr_rx) = mpsc::unbounded_channel::<(String, Instant)>();
+        let (exit_tx, exit_rx) = oneshot::channel::<io::Result<ExitStatus>>();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
         let state = match process {
-            Ok(process) => JobState::Running { process },
+            Ok(process) => {
+                let _ = tokio::spawn(manage_process(
+                    process, stdout_tx, stderr_tx, exit_tx, kill_rx,
+                ));
+                JobState::Running {
+                    stdout_rx,
+                    stderr_rx,
+                    exit_rx,
+                    kill_tx,
+                }
+            }
             Err(err) => JobState::Error {
                 msg: err.to_string(),
             },
@@ -112,121 +152,115 @@ impl JobPool {
     pub async fn delete(&self, id: u64) -> Option<String> {
         let mut jobs = self.jobs.lock().await;
         let job = jobs.remove(&id)?;
-        match job.state {
-            JobState::Running { mut process } => match process.kill().await {
-                Ok(_) => None,
-                Err(err) => Some(err.to_string()),
-            },
-            _ => None,
+        if let JobState::Running { .. } = job.state {
+            let job = self.update_job_state(job, true).await;
+            todo!()
+        } else {
+            None
         }
     }
 
     pub async fn status(&self, id: u64) -> Option<JobStatus> {
-        self.update_job_state(&id).await?;
-        let jobs = self.jobs.lock().await;
-        let job = jobs.get(&id)?;
-        Some(JobStatus::from(&job.state))
+        let mut jobs = self.jobs.lock().await;
+        let job = jobs.remove(&id)?;
+        let job = self.update_job_state(job, false).await;
+        let status = Some(JobStatus::from(&job.state));
+        jobs.insert(id, job);
+        status
     }
 
     pub async fn output(&self, id: u64) -> Option<JobOutput> {
-        self.update_job_state(&id).await?;
         let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(&id)?;
-        Some(job.output.clone())
+        let job = jobs.remove(&id)?;
+        let job = self.update_job_state(job, false).await;
+        let output = Some(job.output.clone());
+        jobs.insert(id, job);
+        output
     }
 
-    async fn update_job_state(&self, id: &u64) -> Option<()> {
-        let mut jobs = self.jobs.lock().await;
-        let mut job = jobs.remove(id)?;
-        drop(jobs);
+    async fn update_job_state(&self, mut job: Job, kill: bool) -> Job {
         job.state = match job.state {
-            JobState::Running { mut process } => match process.try_wait() {
-                Ok(Some(exit_status)) if exit_status.code().is_some() => {
-                    let output = get_outstreams(&mut process).await;
-                    let output = output.unwrap();
-                    dbg!("exit code {:?}", output.clone());
-                    job.output.append(output);
-                    JobState::Completed {
-                        exit_code: exit_status.code().unwrap(),
+            JobState::Running {
+                mut stdout_rx,
+                mut stderr_rx,
+                mut exit_rx,
+                kill_tx,
+            } => {
+                let exit_result = if kill {
+                    if kill_tx.send(()).is_err() {
+                        todo!()
                     }
+                    match exit_rx.await {
+                        Ok(Ok(exit_status)) => Some(exit_status),
+                        Ok(Err(err)) => todo!(),
+                        Err(_) => todo!(),
+                    }
+                } else {
+                    match exit_rx.try_recv() {
+                        Ok(Ok(exit_status)) => Some(exit_status),
+                        Ok(Err(err)) => todo!(),
+                        _ => None,
+                    }
+                };
+                match exit_result {
+                    Some(exit_status) => {
+                        let stdout_lines = receive_all_lines(&mut stdout_rx).await;
+                        let stderr_lines = receive_all_lines(&mut stderr_rx).await;
+                        job.output.append(stdout_lines, stderr_lines);
+                        if let Some(exit_code) = exit_status.code() {
+                            JobState::Completed { exit_code }
+                        } else {
+                            JobState::Terminated
+                        }
+                    }
+                    None => {
+                        let now = Instant::now();
+                        let stdout_lines = receive_lines_until(&mut stdout_rx, &now).await;
+                        let stderr_lines = receive_lines_until(&mut stderr_rx, &now).await;
+                        job.output.append(stdout_lines, stderr_lines);
+                        JobState::Running {
+                            stdout_rx,
+                            stderr_rx,
+                            exit_rx,
+                            kill_tx,
+                        }
+                    },
                 }
-                Ok(Some(_exit_status)) => {
-                    let output = get_outstreams(&mut process).await;
-                    let output = output.unwrap();
-                    dbg!("exit code {:?}", output.clone());
-                    job.output.append(output);
-                    JobState::Terminated
-                }
-                Ok(None) => {
-                    let output = get_outstreams(&mut process).await;
-                    let output = output.unwrap();
-                    dbg!("exit code {:?}", output.clone());
-                    job.output.append(output);
-                    JobState::Running { process }
-                }
-                Err(err) => JobState::Error {
-                    msg: format!("error: {}", err),
-                },
-            },
+            }
+            //     if kill {
+            //         if kill_tx.send(()).is_err() {
+            //             todo!()
+            //         }
+            //         let job_state = match exit_rx.await {
+            //             Ok(Ok(exit_status)) => todo!(),
+            //             Ok(Err(err)) => todo!(),
+            //             Err(recv_error) => todo!(),
+            //         };
+            //         let stdout_lines = receive_all_lines(&mut stdout_rx).await;
+            //         let stderr_lines = receive_all_lines(&mut stderr_rx).await;
+            //         job.output.append(stdout_lines, stderr_lines);
+            //         job_state
+            //     } else {
+            //         match exit_rx.try_recv() {
+            //             Ok(Ok(exit_result)) => {
+            //                 let stdout_lines = receive_all_lines(&mut stdout_rx).await;
+            //                 let stderr_lines = receive_all_lines(&mut stderr_rx).await;
+            //                 job.output.append(stdout_lines, stderr_lines);
+            //                 if let Some(exit_code) = exit_result.code() {
+            //                     JobState::Completed { exit_code }
+            //                 } else {
+            //                     JobState::Terminated
+            //                 }
+            //             }
+            //             Ok(Err(err)) => todo!(),
+            //             Err(err) => running,
+            //         }
+            //     }
+            // }
             x => x,
         };
-        let mut jobs = self.jobs.lock().await;
-        jobs.insert(*id, job);
-        Some(())
+        job
     }
-}
-
-async fn get_outstreams(process: &mut Child) -> io::Result<JobOutput> {
-    dbg!("get outstream start: {:?}", SystemTime::now());
-    let stdout = if let Some(stdout) = &mut process.stdout {
-        let mut buffer = [0; 512];
-        let mut text = Vec::new();
-        'l: loop {
-            tokio::select! {
-                result = stdout.read(&mut buffer) => {
-                    let bytes_read = result?;
-                    if bytes_read == 0 {
-                        break 'l;
-                    }
-                    text.extend_from_slice(&buffer[0..bytes_read]);
-                }
-                _ = sleep(Duration::from_millis(5)) => {
-                    break 'l;
-                }
-            };
-        }
-        let text = String::from_utf8(text).unwrap_or_else(|_| "NON-UTF8".to_string());
-        Some(text)
-    } else {
-        None
-    };
-    let stderr = if let Some(stderr) = &mut process.stderr {
-        let mut buffer = [0; 512];
-        let mut text = Vec::new();
-        'l2: loop {
-            tokio::select! {
-                result = stderr.read(&mut buffer) => {
-                    let bytes_read = result?;
-                    if bytes_read == 0 {
-                        break 'l2;
-                    }
-                    text.extend_from_slice(&buffer[0..bytes_read]);
-                }
-                _ = sleep(Duration::from_millis(5)) => {
-                    break 'l2;
-                }
-            };
-        }
-        let text = String::from_utf8(text).unwrap_or_else(|_| "NON-UTF8".to_string());
-        Some(text)
-    } else {
-        None
-    };
-    dbg!("get outstream end: {:?}", SystemTime::now());
-    Ok(JobOutput {
-        stdout: stdout.unwrap_or_else(|| "".to_string()),
-        stderr: stderr.unwrap_or_else(|| "".to_string()),
-    })
 }
 
 impl Default for JobPool {
@@ -258,7 +292,7 @@ mod test {
             let output = pool.output(id).await;
             assert!(output.is_some());
             let output = output.unwrap();
-            assert_eq!("hi\n".to_string(), output.stdout)
+            assert_eq!("hi\n".to_string(), output.stdout())
         });
     }
 
@@ -302,7 +336,9 @@ mod test {
     fn test_output_long_running() {
         let pool = JobPool::new();
         RUNTIME.block_on(async {
-            let id = pool.submit("bash", &["-c", "while true; do echo hi; sleep 1; done"]).await;
+            let id = pool
+                .submit("bash", &["-c", "while true; do echo hi; sleep 1; done"])
+                .await;
             sleep(Duration::from_millis(1000)).await;
 
             let status = pool.status(id).await;
@@ -310,11 +346,11 @@ mod test {
             let status = status.unwrap();
             assert_eq!(JobStatus::Running, status);
             let output = pool.output(id).await.unwrap();
-            assert_eq!("hi\n", &output.stdout);
+            assert_eq!("hi\n", &output.stdout());
             sleep(Duration::from_millis(1000)).await;
 
             let output = pool.output(id).await.unwrap();
-            assert_eq!("hi\nhi\n", &output.stdout);
+            assert_eq!("hi\nhi\n", &output.stdout());
             sleep(Duration::from_millis(1000)).await;
 
             let err = pool.delete(id).await;
