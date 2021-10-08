@@ -1,21 +1,18 @@
-use core::panic;
 use std::{
     collections::HashMap,
-    process::{exit, ExitStatus, Stdio},
+    process::{ExitStatus, Stdio},
     sync::{atomic::AtomicU64, Arc},
-    time::{Duration, SystemTime},
 };
 
-use serde::de::value::StrDeserializer;
 use tokio::{
-    io::{self, AsyncReadExt},
-    process::{Child, Command},
+    io,
+    process::Command,
     sync::{
         mpsc::{self, UnboundedReceiver},
-        oneshot::{self, Receiver, Sender},
+        oneshot::{self, Receiver},
         Mutex,
     },
-    time::{sleep, Instant},
+    time::Instant,
 };
 use util::{manage_process, receive_lines_until};
 
@@ -48,11 +45,11 @@ impl JobOutput {
     }
 
     pub fn stdout(&self) -> String {
-        self.stdout_lines.join("\n")
+        self.stdout_lines.join("")
     }
 
     pub fn stderr(&self) -> String {
-        self.stderr_lines.join("\n")
+        self.stderr_lines.join("")
     }
 }
 
@@ -153,11 +150,10 @@ impl JobPool {
         let mut jobs = self.jobs.lock().await;
         let job = jobs.remove(&id)?;
         if let JobState::Running { .. } = job.state {
-            let job = self.update_job_state(job, true).await;
-            todo!()
-        } else {
-            None
+            // TODO: decide error handling
+            let _job = self.update_job_state(job, true).await;
         }
+        None
     }
 
     pub async fn status(&self, id: u64) -> Option<JobStatus> {
@@ -186,77 +182,44 @@ impl JobPool {
                 mut exit_rx,
                 kill_tx,
             } => {
-                let exit_result = if kill {
+                if kill {
                     if kill_tx.send(()).is_err() {
                         todo!()
                     }
                     match exit_rx.await {
-                        Ok(Ok(exit_status)) => Some(exit_status),
+                        Ok(Ok(exit_status)) => {
+                            let (state, output) =
+                                finish_job(exit_status, job.output, stdout_rx, stderr_rx).await;
+                            job.output = output;
+                            state
+                        }
                         Ok(Err(err)) => todo!(),
                         Err(_) => todo!(),
                     }
                 } else {
                     match exit_rx.try_recv() {
-                        Ok(Ok(exit_status)) => Some(exit_status),
+                        Ok(Ok(exit_status)) => {
+                            let (state, output) =
+                                finish_job(exit_status, job.output, stdout_rx, stderr_rx).await;
+                            job.output = output;
+                            state
+                        }
                         Ok(Err(err)) => todo!(),
-                        _ => None,
-                    }
-                };
-                match exit_result {
-                    Some(exit_status) => {
-                        let stdout_lines = receive_all_lines(&mut stdout_rx).await;
-                        let stderr_lines = receive_all_lines(&mut stderr_rx).await;
-                        job.output.append(stdout_lines, stderr_lines);
-                        if let Some(exit_code) = exit_status.code() {
-                            JobState::Completed { exit_code }
-                        } else {
-                            JobState::Terminated
+                        _ => {
+                            let now = Instant::now();
+                            let stdout_lines = receive_lines_until(&mut stdout_rx, &now).await;
+                            let stderr_lines = receive_lines_until(&mut stderr_rx, &now).await;
+                            job.output.append(stdout_lines, stderr_lines);
+                            JobState::Running {
+                                stdout_rx,
+                                stderr_rx,
+                                exit_rx,
+                                kill_tx,
+                            }
                         }
                     }
-                    None => {
-                        let now = Instant::now();
-                        let stdout_lines = receive_lines_until(&mut stdout_rx, &now).await;
-                        let stderr_lines = receive_lines_until(&mut stderr_rx, &now).await;
-                        job.output.append(stdout_lines, stderr_lines);
-                        JobState::Running {
-                            stdout_rx,
-                            stderr_rx,
-                            exit_rx,
-                            kill_tx,
-                        }
-                    },
                 }
             }
-            //     if kill {
-            //         if kill_tx.send(()).is_err() {
-            //             todo!()
-            //         }
-            //         let job_state = match exit_rx.await {
-            //             Ok(Ok(exit_status)) => todo!(),
-            //             Ok(Err(err)) => todo!(),
-            //             Err(recv_error) => todo!(),
-            //         };
-            //         let stdout_lines = receive_all_lines(&mut stdout_rx).await;
-            //         let stderr_lines = receive_all_lines(&mut stderr_rx).await;
-            //         job.output.append(stdout_lines, stderr_lines);
-            //         job_state
-            //     } else {
-            //         match exit_rx.try_recv() {
-            //             Ok(Ok(exit_result)) => {
-            //                 let stdout_lines = receive_all_lines(&mut stdout_rx).await;
-            //                 let stderr_lines = receive_all_lines(&mut stderr_rx).await;
-            //                 job.output.append(stdout_lines, stderr_lines);
-            //                 if let Some(exit_code) = exit_result.code() {
-            //                     JobState::Completed { exit_code }
-            //                 } else {
-            //                     JobState::Terminated
-            //                 }
-            //             }
-            //             Ok(Err(err)) => todo!(),
-            //             Err(err) => running,
-            //         }
-            //     }
-            // }
             x => x,
         };
         job
@@ -266,6 +229,22 @@ impl JobPool {
 impl Default for JobPool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+async fn finish_job(
+    exit_status: ExitStatus,
+    mut job_output: JobOutput,
+    mut stdout_rx: UnboundedReceiver<(String, Instant)>,
+    mut stderr_rx: UnboundedReceiver<(String, Instant)>,
+) -> (JobState, JobOutput) {
+    let stdout_lines = receive_all_lines(&mut stdout_rx).await;
+    let stderr_lines = receive_all_lines(&mut stderr_rx).await;
+    job_output.append(stdout_lines, stderr_lines);
+    if let Some(exit_code) = exit_status.code() {
+        (JobState::Completed { exit_code }, job_output)
+    } else {
+        (JobState::Terminated, job_output)
     }
 }
 

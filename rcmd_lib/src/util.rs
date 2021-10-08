@@ -38,9 +38,8 @@ pub async fn manage_process(
     if let Err(join_error) = stderr_handle.await {
         println! {"unexpected error when joining stderr, pid: {:?}, err: {}", process.id(), join_error};
     }
-    if let Err(send_error) = exit_channel.send(process.wait().await) {
+    if let Err(_unsent) = exit_channel.send(process.wait().await) {
         println! {"unexpected closed channel when sending exit result, pid: {:?}", process.id()};
-        todo!()
     }
 }
 
@@ -101,3 +100,4 @@ pub async fn receive_all_lines(
     }
     lines
 }
+
