@@ -9,8 +9,7 @@ use tokio::{
     process::Command,
     sync::{
         mpsc::{self, UnboundedReceiver},
-        oneshot::{self, Receiver},
-        Mutex,
+        oneshot, Mutex,
     },
     time::Instant,
 };
@@ -38,9 +37,11 @@ impl From<&JobState> for JobStatus {
 
 enum JobState {
     Running {
+        // TODO: unbounded channels can lead to excessive memory usage
+        //       a more advanced implementation would spill to disk
         stdout_rx: UnboundedReceiver<(String, Instant)>,
         stderr_rx: UnboundedReceiver<(String, Instant)>,
-        exit_rx: Receiver<io::Result<ExitStatus>>,
+        exit_rx: oneshot::Receiver<io::Result<ExitStatus>>,
         kill_tx: oneshot::Sender<()>,
     },
     Completed {
@@ -128,8 +129,9 @@ impl JobPool {
         id
     }
 
-    /// deletes job if exists
+    /// deletes job if exists and returns None
     /// associated process is guaranteed to have been terminated
+    /// if job ends up in error state, returns Some(error message)
     #[instrument(skip(self))]
     pub async fn delete(&self, id: u64) -> Option<String> {
         info!("try to delete job");
@@ -138,7 +140,9 @@ impl JobPool {
         if let JobState::Running { .. } = job.state {
             let job = self.update_job_state(job, true).await;
             if let JobState::Error { msg } = job.state {
-                error!("deletion resulted in error state: {}", msg);
+                let msg = format!("deletion resulted in error state: {}", msg);
+                error!("{}", &msg);
+                return Some(msg);
             }
         }
         info!("deleted job");
@@ -171,6 +175,9 @@ impl JobPool {
         output
     }
 
+    /// update job's state and output
+    /// if kill is true, send kill signal to job's process and collect all outstanding output
+    /// returns updated job
     async fn update_job_state(&self, mut job: Job, kill: bool) -> Job {
         job.state = match job.state {
             JobState::Running {
@@ -185,8 +192,7 @@ impl JobPool {
                         job.id, job.pid
                     );
                     if kill_tx.send(()).is_err() {
-                        // TODO: handle error instead of panic
-                        panic!("kill signal channel receiver unexpectedly dropped");
+                        info!("kill signal channel receiver dropped, process already exited");
                     }
                     match exit_rx.await {
                         Ok(exit_result) => {
@@ -196,7 +202,11 @@ impl JobPool {
                             state
                         }
                         // TODO: handle error instead of panic
-                        Err(_sender_dropped) => panic!("exit channel sender unexpectedly dropped"),
+                        // this should never happen, manager task should never complete without sending
+                        // could either return job error state or add extra "internal error" state to return here
+                        Err(_err) => {
+                            panic!("exit channel sender unexpectedly dropped without sending")
+                        }
                     }
                 } else {
                     match exit_rx.try_recv() {

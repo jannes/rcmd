@@ -36,6 +36,7 @@ pub async fn manage_process(
                 // this would happen when job pool was dropped
                 debug!("kill channel receive error, sender dropped, pid: {:?}", process.id());
             }
+            // kill process no matter if channel was closed or signal was sent
             if let Err(kill_error) = process.kill().await {
                 error!("unexpected error when killing process, pid: {:?}, err: {}", process.id(), kill_error);
             }
@@ -93,6 +94,8 @@ pub async fn receive_all_lines(
     lines
 }
 
+/// reads from stream and sends to channel line by line until EOF
+/// when encountering invalid utf8 a marker is added to the line
 async fn read_to_end<A: AsyncRead + std::marker::Unpin>(
     stream: A,
     lines_sender: mpsc::UnboundedSender<(String, Instant)>,
@@ -105,11 +108,11 @@ async fn read_to_end<A: AsyncRead + std::marker::Unpin>(
             Ok(_) => {}
             Err(io_error) => match io_error.kind() {
                 io::ErrorKind::InvalidData => buf.push_str("###INVALID UTF8###"),
-                _ => println!("unexpected io error when reading from stream: {}", io_error),
+                _ => error!("unexpected io error when reading from stream: {}", io_error),
             },
         }
         if let Err(send_error) = lines_sender.send((buf, Instant::now())) {
-            println!(
+            error!(
                 "unexpected error when sending stream output line : {}",
                 send_error
             )

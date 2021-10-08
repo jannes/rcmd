@@ -1,8 +1,3 @@
-pub struct CommandSpec {
-    pub cmd: String,
-    pub args: Vec<String>,
-}
-
 #[derive(Clone, Debug)]
 pub struct JobOutput {
     stdout_lines: Vec<String>,
