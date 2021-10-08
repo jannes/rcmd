@@ -99,6 +99,8 @@ struct Job {
 }
 
 pub struct JobPool {
+    // using counter instead of uuid for more convenient usage from client
+    // amount of jobs should not be considered private
     next_job_id: AtomicU64,
     jobs: Arc<Mutex<HashMap<u64, Job>>>,
 }
@@ -111,21 +113,26 @@ impl JobPool {
         }
     }
 
+    /// submit a job for execution
+    /// always succeeds with a job id, errors have to be checked with status
     pub async fn submit(&self, command: &str, args: &[&str]) -> u64 {
         let id = self
             .next_job_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // spawn process and pipe stdout/stderr
         let process = Command::new(command)
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
-        let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<(String, Instant)>();
-        let (stderr_tx, stderr_rx) = mpsc::unbounded_channel::<(String, Instant)>();
-        let (exit_tx, exit_rx) = oneshot::channel::<io::Result<ExitStatus>>();
-        let (kill_tx, kill_rx) = oneshot::channel::<()>();
         let state = match process {
             Ok(process) => {
+                // channels for std streams, exit and kill signal
+                let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<(String, Instant)>();
+                let (stderr_tx, stderr_rx) = mpsc::unbounded_channel::<(String, Instant)>();
+                let (exit_tx, exit_rx) = oneshot::channel::<io::Result<ExitStatus>>();
+                let (kill_tx, kill_rx) = oneshot::channel::<()>();
+                // spawn manager task that updates stream/exit channels and listens for kill signal
                 let _ = tokio::spawn(manage_process(
                     process, stdout_tx, stderr_tx, exit_tx, kill_rx,
                 ));
@@ -146,6 +153,8 @@ impl JobPool {
         id
     }
 
+    /// deletes job if exists
+    /// associated process is guaranteed to have been terminated
     pub async fn delete(&self, id: u64) -> Option<String> {
         let mut jobs = self.jobs.lock().await;
         let job = jobs.remove(&id)?;
@@ -156,6 +165,7 @@ impl JobPool {
         None
     }
 
+    /// gets job status if job exists
     pub async fn status(&self, id: u64) -> Option<JobStatus> {
         let mut jobs = self.jobs.lock().await;
         let job = jobs.remove(&id)?;
@@ -165,6 +175,7 @@ impl JobPool {
         status
     }
 
+    /// gets job output if job exists
     pub async fn output(&self, id: u64) -> Option<JobOutput> {
         let mut jobs = self.jobs.lock().await;
         let job = jobs.remove(&id)?;
@@ -232,6 +243,7 @@ impl Default for JobPool {
     }
 }
 
+/// reads all remaining lines from stdout/stderr channels and returns full job output
 async fn finish_job(
     exit_status: ExitStatus,
     mut job_output: JobOutput,

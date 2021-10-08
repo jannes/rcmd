@@ -43,6 +43,42 @@ pub async fn manage_process(
     }
 }
 
+/// get all lines from channel up to timestamp <until>
+/// actually receives one more line with timestamp after <until>
+pub async fn receive_lines_until(
+    lines_receiver: &mut mpsc::UnboundedReceiver<(String, Instant)>,
+    until: &Instant,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    loop {
+        match lines_receiver.try_recv() {
+            Ok((line, timestamp)) => {
+                lines.push(line);
+                if timestamp > *until {
+                    break;
+                }
+            }
+            Err(_err) => break,
+        };
+    }
+    lines
+}
+
+/// get all lines from channel until all senders have dropped
+pub async fn receive_all_lines(
+    lines_receiver: &mut mpsc::UnboundedReceiver<(String, Instant)>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    loop {
+        if let Some((line, _timestamp)) = lines_receiver.recv().await {
+            lines.push(line);
+        } else {
+            break;
+        }
+    }
+    lines
+}
+
 async fn read_to_end<A: AsyncRead + std::marker::Unpin>(
     stream: A,
     lines_sender: mpsc::UnboundedSender<(String, Instant)>,
@@ -66,38 +102,3 @@ async fn read_to_end<A: AsyncRead + std::marker::Unpin>(
         }
     }
 }
-
-// actually receives one more line with timestamp after <until>
-pub async fn receive_lines_until(
-    lines_receiver: &mut mpsc::UnboundedReceiver<(String, Instant)>,
-    until: &Instant,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    loop {
-        match lines_receiver.try_recv() {
-            Ok((line, timestamp)) => {
-                lines.push(line);
-                if timestamp > *until {
-                    break;
-                }
-            }
-            Err(_err) => break,
-        };
-    }
-    lines
-}
-
-pub async fn receive_all_lines(
-    lines_receiver: &mut mpsc::UnboundedReceiver<(String, Instant)>,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    loop {
-        if let Some((line, _timestamp)) = lines_receiver.recv().await {
-            lines.push(line);
-        } else {
-            break;
-        }
-    }
-    lines
-}
-
