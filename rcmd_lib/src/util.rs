@@ -50,16 +50,11 @@ pub async fn receive_lines_until(
     until: &Instant,
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    loop {
-        match lines_receiver.try_recv() {
-            Ok((line, timestamp)) => {
-                lines.push(line);
-                if timestamp > *until {
-                    break;
-                }
-            }
-            Err(_err) => break,
-        };
+    while let Ok((line, timestamp)) = lines_receiver.try_recv() {
+        lines.push(line);
+        if timestamp > *until {
+            break;
+        }
     }
     lines
 }
@@ -69,12 +64,8 @@ pub async fn receive_all_lines(
     lines_receiver: &mut mpsc::UnboundedReceiver<(String, Instant)>,
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    loop {
-        if let Some((line, _timestamp)) = lines_receiver.recv().await {
-            lines.push(line);
-        } else {
-            break;
-        }
+    while let Some((line, _timestamp)) = lines_receiver.recv().await {
+        lines.push(line);
     }
     lines
 }

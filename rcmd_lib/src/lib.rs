@@ -32,6 +32,7 @@ pub struct JobOutput {
 }
 
 impl JobOutput {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             stdout_lines: Vec::new(),
@@ -159,8 +160,10 @@ impl JobPool {
         let mut jobs = self.jobs.lock().await;
         let job = jobs.remove(&id)?;
         if let JobState::Running { .. } = job.state {
-            // TODO: decide error handling
-            let _job = self.update_job_state(job, true).await;
+            let job = self.update_job_state(job, true).await;
+            if let JobState::Error{msg} = job.state {
+                println!("deletion resulted in error state: {}", msg);
+            }
         }
         None
     }
@@ -198,24 +201,22 @@ impl JobPool {
                         todo!()
                     }
                     match exit_rx.await {
-                        Ok(Ok(exit_status)) => {
+                        Ok(exit_result) => {
                             let (state, output) =
-                                finish_job(exit_status, job.output, stdout_rx, stderr_rx).await;
+                                finish_job(exit_result, job.output, stdout_rx, stderr_rx).await;
                             job.output = output;
                             state
                         }
-                        Ok(Err(err)) => todo!(),
-                        Err(_) => todo!(),
+                        Err(_sender_dropped) => panic!("exit channel sender unexpectedly dropped"),
                     }
                 } else {
                     match exit_rx.try_recv() {
-                        Ok(Ok(exit_status)) => {
+                        Ok(exit_result) => {
                             let (state, output) =
-                                finish_job(exit_status, job.output, stdout_rx, stderr_rx).await;
+                                finish_job(exit_result, job.output, stdout_rx, stderr_rx).await;
                             job.output = output;
                             state
                         }
-                        Ok(Err(err)) => todo!(),
                         _ => {
                             let now = Instant::now();
                             let stdout_lines = receive_lines_until(&mut stdout_rx, &now).await;
@@ -245,7 +246,7 @@ impl Default for JobPool {
 
 /// reads all remaining lines from stdout/stderr channels and returns full job output
 async fn finish_job(
-    exit_status: ExitStatus,
+    exit_status: io::Result<ExitStatus>,
     mut job_output: JobOutput,
     mut stdout_rx: UnboundedReceiver<(String, Instant)>,
     mut stderr_rx: UnboundedReceiver<(String, Instant)>,
@@ -253,10 +254,18 @@ async fn finish_job(
     let stdout_lines = receive_all_lines(&mut stdout_rx).await;
     let stderr_lines = receive_all_lines(&mut stderr_rx).await;
     job_output.append(stdout_lines, stderr_lines);
-    if let Some(exit_code) = exit_status.code() {
-        (JobState::Completed { exit_code }, job_output)
-    } else {
-        (JobState::Terminated, job_output)
+    match exit_status {
+        Ok(exit_status) if exit_status.code().is_some() => {
+            let exit_code = exit_status.code().unwrap();
+            (JobState::Completed { exit_code }, job_output)
+        },
+        Ok(_exit_status) => (JobState::Terminated, job_output),
+        Err(io_err) => {
+            let error_state = JobState::Error {
+                msg: format!("unexpected io error when waiting for job process {:?}", io_err),
+            };
+            (error_state, job_output)
+        },
     }
 }
 
@@ -274,8 +283,9 @@ mod test {
         static ref RUNTIME: Runtime = Runtime::new().unwrap();
     }
 
+    // testing output of oneshot echo command
     #[test]
-    fn test_output() {
+    fn test_output_echo() {
         let pool = JobPool::new();
         RUNTIME.block_on(async {
             let id = pool.submit("echo", &["hi"]).await;
@@ -287,8 +297,9 @@ mod test {
         });
     }
 
+    // testing status of oneshot ls command
     #[test]
-    fn test_status() {
+    fn test_status_ls() {
         let pool = JobPool::new();
         RUNTIME.block_on(async {
             let id = pool.submit("ls", &[]).await;
@@ -304,8 +315,9 @@ mod test {
         });
     }
 
+    // testing status of sleep job before and after delete
     #[test]
-    fn test_status_deleted() {
+    fn test_status_sleep_deleted() {
         let pool = JobPool::new();
         RUNTIME.block_on(async {
             dbg!("submit: {:?}", SystemTime::now());
@@ -323,8 +335,9 @@ mod test {
         });
     }
 
+    // testing output of echo loop
     #[test]
-    fn test_output_long_running() {
+    fn test_output_repeated_echo() {
         let pool = JobPool::new();
         RUNTIME.block_on(async {
             let id = pool
