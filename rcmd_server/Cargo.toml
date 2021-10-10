@@ -4,6 +4,5 @@ name = "rcmd_server"
 version = "0.1.0"
 
 [dependencies]
-rcmd_shared = {path = "../rcmd_shared"}
+rcmd_lib = {path = "../rcmd_lib"}
 rocket = {git = "https://github.com/SergioBenitez/Rocket", branch = "master", features = ["json", "tls", "mtls"]}
-tokio = {version = "1.12", features = ["process", "rt", "sync"]}

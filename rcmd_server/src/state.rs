@@ -1,61 +1,41 @@
 use std::{
     collections::HashMap,
-    process::Stdio,
-    sync::{atomic::AtomicU64, Arc, Mutex},
+    sync::{Arc, RwLock},
 };
 
-use rcmd_shared::{CommandSpec, Job, JobStatus};
-use tokio::{io, process::Command};
+use rcmd_lib::job_pool::JobPool;
 
-pub struct JobsState {
-    pub next_job_id: AtomicU64,
-    pub jobs: Arc<Mutex<HashMap<u64, Job>>>,
+pub struct JobPools {
+    pub job_pools: Arc<RwLock<HashMap<String, Arc<JobPool>>>>,
 }
 
-impl JobsState {
-    pub async fn submit(&self, cmd_spec: CommandSpec) -> u64 {
-        let id = self
-            .next_job_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let job = Job::new(id, cmd_spec.clone());
-        self.jobs.lock().unwrap().insert(id, job);
+impl JobPools {
+    pub fn new() -> Self {
+        Self {
+            job_pools: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
 
-        let jobs = self.jobs.clone();
-        tokio::spawn(async move {
-            if let Err(e) = run_job(jobs, cmd_spec, id).await {
-                todo!()
-            }
-        });
+    pub fn has_pool(&self, client: &str) -> bool {
+        self.job_pools.read().unwrap().contains_key(client)
+    }
 
-        id
+    pub fn get_pool(&self, client: &str) -> Option<Arc<JobPool>> {
+        self.job_pools.read().unwrap().get(client).cloned()
+    }
+
+    pub fn create_pool(&self, client: &str) -> Arc<JobPool> {
+        let pool = JobPool::new();
+        self.job_pools
+            .write()
+            .unwrap()
+            .insert(client.to_string(), Arc::new(pool));
+        self.get_pool(client).unwrap()
     }
 }
 
-async fn run_job(
-    jobs: Arc<Mutex<HashMap<u64, Job>>>,
-    cmd_spec: CommandSpec,
-    cmd_id: u64,
-) -> Result<(), io::Error> {
-    // spawn process
-    let process = Command::new(cmd_spec.cmd)
-        .args(cmd_spec.args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    // wait for process to finish
-    let output = process.wait_with_output().await?;
-    // update job
-    let mut jobs_guard = jobs.lock().unwrap();
-    let job = jobs_guard.get_mut(&cmd_id);
-    if let Some(j) = job {
-        j.status = JobStatus::Completed(output.status.code());
-        j.stderr = String::from_utf8(output.stderr)
-            .ok()
-            .unwrap_or_else(|| "".to_string());
-        j.stdout = String::from_utf8(output.stdout)
-            .ok()
-            .unwrap_or_else(|| "".to_string());
+impl Default for JobPools {
+    fn default() -> Self {
+        Self::new()
     }
-    drop(jobs_guard);
-    Ok(())
 }
