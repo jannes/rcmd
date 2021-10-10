@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, env};
 
 use rcmd_lib::job::{JobOutput, JobSpec, JobStatus};
 use rocket::{
@@ -47,16 +47,24 @@ async fn get_output(client_job_pool: ClientJobPool, id: u64) -> Option<Json<JobO
 async fn delete_job(client_job_pool: ClientJobPool, id: u64) -> Result<(), String> {
     match client_job_pool.job_pool.delete(id).await {
         Some(err) => Err(err),
-        None => Ok(())
+        None => Ok(()),
     }
 }
 
 #[launch]
 fn rocket() -> _ {
-    let tls_config =
-        TlsConfig::from_paths("../tls-certs/server.crt", "../tls-certs/server.pkcs8.key")
-            .with_ciphers(CipherSuite::TLS_V13_SET)
-            .with_mutual(MutualTls::from_path("../tls-certs/rootCA.crt").mandatory(true));
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        panic!("required argument: path to tls certs without trailing slash");
+    }
+    let tls_dir = args.get(1).unwrap();
+
+    let tls_config = TlsConfig::from_paths(
+        format!("{}/server.crt", tls_dir),
+        format!("{}/server.pkcs8.key", tls_dir),
+    )
+    .with_ciphers(CipherSuite::TLS_V13_SET)
+    .with_mutual(MutualTls::from_path(format!("{}/rootCA.crt", tls_dir)).mandatory(true));
 
     let config = Config {
         tls: Some(tls_config),
