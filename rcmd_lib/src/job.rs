@@ -1,4 +1,6 @@
-#[derive(Clone, Debug, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobSpec {
     pub command: String,
     pub arguments: Vec<String>,
@@ -13,7 +15,7 @@ impl JobSpec {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobOutput {
     stdout_lines: Vec<String>,
     stderr_lines: Vec<String>,
@@ -42,7 +44,7 @@ impl JobOutput {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobStatus {
     Running,
     Completed { exit_code: i32 },

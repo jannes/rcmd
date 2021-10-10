@@ -4,17 +4,16 @@ use rcmd_lib::job::{JobOutput, JobSpec, JobStatus};
 use rocket::{
     config::{CipherSuite, MutualTls, TlsConfig},
     serde::json::Json,
-    Config, State,
+    Config,
 };
 use state::JobPools;
 
-use crate::client::ClientJobPool;
+use crate::auth::ClientJobPool;
 
 #[macro_use]
 extern crate rocket;
 
-mod client;
-mod data;
+mod auth;
 mod state;
 
 #[get("/")]
@@ -22,49 +21,34 @@ fn index(client: ClientJobPool) -> String {
     format!("Hello, {}!", client.client.name)
 }
 
-#[post("/jobs", format = "json", data = "<command>")]
-async fn start_job(
-    client_job_pool: ClientJobPool,
-    command: Json<data::JobSpec>,
-    jobs_state: &State<JobPools>,
-) -> Json<u64> {
-    todo!()
+#[post("/jobs", format = "json", data = "<job_spec>")]
+async fn start_job(client_job_pool: ClientJobPool, job_spec: Json<JobSpec>) -> Json<u64> {
+    let command = &job_spec.command;
+    let args: Vec<&str> = job_spec.arguments.iter().map(|arg| arg.as_str()).collect();
+    Json(client_job_pool.job_pool.submit(command, &args).await)
 }
 
 #[get("/jobs")]
-async fn get_jobs(
-    client_job_pool: ClientJobPool,
-    jobs_state: &State<JobPools>,
-) -> Json<HashMap<u64, data::JobSpec>> {
-    todo!()
-    // Json(jobs_state.jobs.lock().unwrap().values().cloned().collect())
+async fn get_jobs(client_job_pool: ClientJobPool) -> Json<HashMap<u64, JobSpec>> {
+    Json(client_job_pool.job_pool.list().await)
 }
 
 #[get("/jobs/<id>/status")]
-async fn get_status(
-    client_job_pool: ClientJobPool,
-    id: u64,
-    jobs_state: &State<JobPools>,
-) -> Option<Json<data::JobStatus>> {
-    todo!()
+async fn get_status(client_job_pool: ClientJobPool, id: u64) -> Option<Json<JobStatus>> {
+    client_job_pool.job_pool.status(id).await.map(Json)
 }
 
 #[get("/jobs/<id>/output")]
-async fn get_output(
-    client_job_pool: ClientJobPool,
-    id: u64,
-    jobs_state: &State<JobPools>,
-) -> Option<Json<data::JobOutput>> {
-    todo!()
+async fn get_output(client_job_pool: ClientJobPool, id: u64) -> Option<Json<JobOutput>> {
+    client_job_pool.job_pool.output(id).await.map(Json)
 }
 
 #[delete("/jobs/<id>")]
-async fn remove_job(
-    client_job_pool: ClientJobPool,
-    id: u64,
-    jobs_state: &State<JobPools>,
-) -> Option<String> {
-    todo!()
+async fn delete_job(client_job_pool: ClientJobPool, id: u64) -> Result<(), String> {
+    match client_job_pool.job_pool.delete(id).await {
+        Some(err) => Err(err),
+        None => Ok(())
+    }
 }
 
 #[launch]
@@ -81,6 +65,6 @@ fn rocket() -> _ {
 
     rocket::custom(config).manage(JobPools::new()).mount(
         "/",
-        routes![index, start_job, get_jobs, get_status, get_output, remove_job],
+        routes![index, start_job, get_jobs, get_status, get_output, delete_job],
     )
 }
