@@ -1,4 +1,19 @@
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobSpec {
+    pub command: String,
+    pub arguments: Vec<String>,
+}
+
+impl JobSpec {
+    pub fn new(command: &str, args: &[&str]) -> Self {
+        Self {
+            command: command.to_string(),
+            arguments: args.iter().map(|a| a.to_string()).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JobOutput {
     stdout_lines: Vec<String>,
     stderr_lines: Vec<String>,

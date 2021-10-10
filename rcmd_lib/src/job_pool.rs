@@ -16,7 +16,7 @@ use tokio::{
 use tracing::{error, info, instrument};
 
 use crate::{
-    job::{JobOutput, JobStatus},
+    job::{JobOutput, JobSpec, JobStatus},
     util::{manage_process, receive_all_lines, receive_lines_until},
 };
 
@@ -56,6 +56,7 @@ enum JobState {
 struct Job {
     id: u64,
     pid: Option<u32>,
+    spec: JobSpec,
     state: JobState,
     output: JobOutput,
 }
@@ -119,9 +120,11 @@ impl JobPool {
             }
         };
         let output = JobOutput::new();
+        let spec = JobSpec::new(command, args);
         let job = Job {
             id,
             pid,
+            spec,
             state,
             output,
         };
@@ -173,6 +176,16 @@ impl JobPool {
         jobs.insert(id, job);
         info!("got output");
         output
+    }
+
+    /// get a mapping of all jobs and their specs
+    #[instrument(skip_all)]
+    pub async fn list(&self) -> HashMap<u64, JobSpec> {
+        info!("get a list of jobs");
+        let jobs = self.jobs.lock().await;
+        jobs.iter()
+            .map(|(id, job)| (*id, job.spec.clone()))
+            .collect()
     }
 
     /// update job's state and output
@@ -273,7 +286,7 @@ mod test {
 
     use tokio::{runtime::Runtime, time::sleep};
 
-    use crate::job::JobStatus;
+    use crate::job::{JobSpec, JobStatus};
 
     use super::JobPool;
 
@@ -383,6 +396,28 @@ mod test {
                 JobStatus::Error { msg: _ } => {}
                 s => panic!("expected error job status, got: {:?}", s),
             }
+        });
+    }
+
+    // testing listing of jobs
+    #[test]
+    fn test_list_jobs() {
+        setup();
+        let pool = JobPool::new();
+        RUNTIME.block_on(async {
+            let first = pool.submit("abcdfg", &[]).await;
+            let second = pool.submit("ls", &[]).await;
+            let third = pool.submit("echo", &["hi"]).await;
+            let delete_response = pool.delete(second).await;
+            let listed = pool.list().await;
+            assert!(delete_response.is_none());
+            assert!(listed.contains_key(&first));
+            assert!(listed.contains_key(&third));
+            assert_eq!(2, listed.len());
+            let first_spec = JobSpec::new("abcdfg", &[]);
+            let third_spec = JobSpec::new("echo", &["hi"]);
+            assert_eq!(&first_spec, listed.get(&first).unwrap());
+            assert_eq!(&third_spec, listed.get(&third).unwrap());
         });
     }
 }
