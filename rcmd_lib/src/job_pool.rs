@@ -134,7 +134,7 @@ impl JobPool {
     /// associated process is guaranteed to have been terminated
     /// if job ends up in error state, returns Some(error message)
     #[instrument(skip(self))]
-    pub async fn delete(&self, id: u64) -> Option<String> {
+    pub async fn delete(&self, id: u64) -> Option<Result<(), String>> {
         info!("try to delete job");
         let mut jobs = self.jobs.lock().await;
         let job = jobs.remove(&id)?;
@@ -143,11 +143,11 @@ impl JobPool {
             if let JobState::Error { msg } = job.state {
                 let msg = format!("deletion resulted in error state: {}", msg);
                 error!("{}", &msg);
-                return Some(msg);
+                return Some(Err(msg));
             }
         }
         info!("deleted job");
-        None
+        Some(Ok(()))
     }
 
     /// gets job status if job exists
@@ -343,8 +343,8 @@ mod test {
             assert!(status.is_some());
             let status = status.unwrap();
             assert_eq!(JobStatus::Running, status);
-            let err = pool.delete(id).await;
-            assert_eq!(None, err);
+            let delete_response = pool.delete(id).await;
+            assert_eq!(Some(Ok(())), delete_response);
             let status = pool.status(id).await;
             assert!(status.is_none());
         });
@@ -371,8 +371,8 @@ mod test {
 
             let output = pool.output(id).await.unwrap();
             assert_eq!("hi\nhi\n", &output.stdout());
-            let err = pool.delete(id).await;
-            assert_eq!(None, err);
+            let delete_response = pool.delete(id).await;
+            assert_eq!(Some(Ok(())), delete_response);
             let status = pool.status(id).await;
             assert!(status.is_none());
         });
@@ -407,7 +407,7 @@ mod test {
             let third = pool.submit("echo", &["hi"]).await;
             let delete_response = pool.delete(second).await;
             let listed = pool.list().await;
-            assert!(delete_response.is_none());
+            assert_eq!(Some(Ok(())), delete_response);
             assert!(listed.contains_key(&first));
             assert!(listed.contains_key(&third));
             assert_eq!(2, listed.len());

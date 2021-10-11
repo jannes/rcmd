@@ -3,6 +3,8 @@ use std::{collections::HashMap, env};
 use rcmd_lib::job_pool::{JobOutput, JobSpec, JobStatus};
 use rocket::{
     config::{CipherSuite, MutualTls, TlsConfig},
+    http::Status,
+    response::status,
     serde::json::Json,
     Config,
 };
@@ -44,10 +46,14 @@ async fn get_output(client_job_pool: ClientJobPool, id: u64) -> Option<Json<JobO
 }
 
 #[delete("/jobs/<id>")]
-async fn delete_job(client_job_pool: ClientJobPool, id: u64) -> Result<(), String> {
+async fn delete_job(
+    client_job_pool: ClientJobPool,
+    id: u64,
+) -> Option<Result<(), status::Custom<String>>> {
     match client_job_pool.job_pool.delete(id).await {
-        Some(err) => Err(err),
-        None => Ok(()),
+        Some(Ok(_)) => Some(Ok(())),
+        Some(Err(err)) => Some(Err(status::Custom(Status::InternalServerError, err))),
+        None => None,
     }
 }
 

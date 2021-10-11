@@ -18,8 +18,8 @@ struct Opt {
     #[structopt(name = "CERTIFICATES_DIRECTORY", parse(from_os_str))]
     certs_dir: PathBuf,
 
-    #[structopt(name = "REMOTE_URL")]
-    remote_url: String,
+    #[structopt(name = "HOST_NAME")]
+    host_name: String,
 
     #[structopt(subcommand)]
     operation: Operation,
@@ -30,7 +30,7 @@ enum Operation {
     Exec {
         #[structopt(name = "COMMAND")]
         command: String,
-        #[structopt(name = "ARGS")]
+        #[structopt(name = "ARGUMENTS")]
         args: Vec<String>,
     },
     List,
@@ -74,12 +74,12 @@ fn main() {
     let output = match opt.operation {
         Operation::Exec { command, args } => {
             let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
-            submit(&client, opt.remote_url, &command, &args)
+            submit(&client, opt.host_name, &command, &args)
         }
-        Operation::List => list(&client, opt.remote_url),
-        Operation::Status { id } => status(&client, opt.remote_url, id),
-        Operation::Output { id } => output(&client, opt.remote_url, id),
-        Operation::Delete { id } => delete(&client, opt.remote_url, id),
+        Operation::List => list(&client, opt.host_name),
+        Operation::Status { id } => status(&client, opt.host_name, id),
+        Operation::Output { id } => output(&client, opt.host_name, id),
+        Operation::Delete { id } => delete(&client, opt.host_name, id),
     };
 
     println!("{}", output);
