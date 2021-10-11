@@ -1,0 +1,8 @@
+[package]
+edition = "2018"
+name = "rcmd_data"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0.130"
+serde_json = "1.0.68"

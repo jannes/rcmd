@@ -4,6 +4,7 @@ use std::{
     sync::{atomic::AtomicU64, Arc},
 };
 
+pub use rcmd_data::{JobOutput, JobSpec, JobStatus};
 use tokio::{
     io,
     process::Command,
@@ -15,10 +16,7 @@ use tokio::{
 };
 use tracing::{error, info, instrument};
 
-use crate::{
-    job::{JobOutput, JobSpec, JobStatus},
-    util::{manage_process, receive_all_lines, receive_lines_until},
-};
+use crate::util::{manage_process, receive_all_lines, receive_lines_until};
 
 impl From<&JobState> for JobStatus {
     fn from(state: &JobState) -> Self {
@@ -284,9 +282,8 @@ mod test {
 
     use lazy_static::lazy_static;
 
+    use rcmd_data::{JobSpec, JobStatus};
     use tokio::{runtime::Runtime, time::sleep};
-
-    use crate::job::{JobSpec, JobStatus};
 
     use super::JobPool;
 

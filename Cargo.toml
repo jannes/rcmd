@@ -3,4 +3,5 @@ members = [
     "rcmd_client",
     "rcmd_server",
     "rcmd_lib",
+    "rcmd_data",
 ]

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env};
 
-use rcmd_lib::job::{JobOutput, JobSpec, JobStatus};
+use rcmd_lib::job_pool::{JobOutput, JobSpec, JobStatus};
 use rocket::{
     config::{CipherSuite, MutualTls, TlsConfig},
     serde::json::Json,
