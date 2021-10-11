@@ -5,4 +5,5 @@ version = "0.1.0"
 
 [dependencies]
 rcmd_lib = {path = "../rcmd_lib"}
-rocket = {git = "https://github.com/SergioBenitez/Rocket", branch = "master", features = ["json", "tls", "mtls"]}
+# only latest unpublished Rocket includes mTLS support
+rocket = {git = "https://github.com/SergioBenitez/Rocket", rev = "8cae077ba1d54b", features = ["json", "tls", "mtls"]}
