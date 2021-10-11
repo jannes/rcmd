@@ -5,15 +5,21 @@ use std::{
 
 use structopt::StructOpt;
 
-/// A basic example
+use crate::operations::{delete, list, output, status, submit};
+
+mod operations;
+
+const CA_CERT_NAME: &str = "rootCA.crt";
+const CLIENT_IDENTITY_NAME: &str = "clientKeyCert.pem";
+
 #[derive(StructOpt, Debug)]
 #[structopt(name = "rcmd-client")]
 struct Opt {
-    #[structopt(name = "CERTIFICATES DIRECTORY", parse(from_os_str))]
+    #[structopt(name = "CERTIFICATES_DIRECTORY", parse(from_os_str))]
     certs_dir: PathBuf,
 
-    #[structopt(name = "REMOTE_URL:PORT")]
-    remote_url_port: String,
+    #[structopt(name = "REMOTE_URL")]
+    remote_url: String,
 
     #[structopt(subcommand)]
     operation: Operation,
@@ -21,27 +27,26 @@ struct Opt {
 
 #[derive(Debug, StructOpt)]
 enum Operation {
-    Exec(ExecuteOperation),
-    Show(ShowOperation),
-    List(ListOperation),
+    Exec {
+        #[structopt(name = "COMMAND")]
+        command: String,
+        #[structopt(name = "ARGS")]
+        args: Vec<String>,
+    },
+    List,
+    Status {
+        #[structopt(name = "JOB_ID")]
+        id: u64,
+    },
+    Output {
+        #[structopt(name = "JOB_ID")]
+        id: u64,
+    },
+    Delete {
+        #[structopt(name = "JOB_ID")]
+        id: u64,
+    },
 }
-
-#[derive(Debug, StructOpt)]
-struct ExecuteOperation {
-    #[structopt(name = "COMMAND")]
-    command: String,
-    #[structopt(name = "ARGS")]
-    args: Vec<String>,
-}
-
-#[derive(Debug, StructOpt)]
-struct ShowOperation {}
-
-#[derive(Debug, StructOpt)]
-struct ListOperation {}
-
-const CA_CERT_NAME: &str = "rootCA.crt";
-const CLIENT_IDENTITY_NAME: &str = "clientKeyCert.pem";
 
 fn main() {
     let opt = Opt::from_args();
@@ -65,12 +70,17 @@ fn main() {
         .use_rustls_tls()
         .build()
         .expect("could not build http client");
-    let request = client
-        .get(opt.remote_url_port)
-        .build()
-        .expect("unexpected error building the request");
-    match client.execute(request) {
-        Ok(response) => println!("{}", response.text().unwrap()),
-        Err(e) => println!("{:?}", e),
-    }
+
+    let output = match opt.operation {
+        Operation::Exec { command, args } => {
+            let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
+            submit(&client, opt.remote_url, &command, &args)
+        }
+        Operation::List => list(&client, opt.remote_url),
+        Operation::Status { id } => status(&client, opt.remote_url, id),
+        Operation::Output { id } => output(&client, opt.remote_url, id),
+        Operation::Delete { id } => delete(&client, opt.remote_url, id),
+    };
+
+    println!("{}", output);
 }
