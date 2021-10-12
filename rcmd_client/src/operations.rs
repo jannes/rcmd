@@ -68,7 +68,7 @@ pub fn output(http_client: &Client, url: String, job_id: u64) -> String {
         Ok(response) if response.status().is_success() => {
             let output: JobOutput = response.json().unwrap();
             format!(
-                "___STDOUT___\n{}\n___STDERR___\n{}",
+                "___STDOUT___\n{}___STDERR___{}",
                 output.stdout(),
                 output.stderr()
             )
