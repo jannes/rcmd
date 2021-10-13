@@ -36,7 +36,7 @@ openssl req -new -key $SERVER_KEY_PAIR_PATH -out $SERVER_CRS_PATH \
 # generate TLS cert from CSR, key, CA root key
 openssl x509 -req -in $SERVER_CRS_PATH \
     -CA $CA_CERT_PATH -CAkey $CA_KEY_PAIR_PATH -CAcreateserial \
-    -extfile <(printf "subjectAltName=DNS:localhost") \
+    -extfile <(printf "subjectAltName=DNS:localhost,DNS:${SERVER_COMMON_NAME}") \
     -out $SERVER_CERT_PATH -days 365 -sha256
 
 # == client cert
@@ -48,7 +48,7 @@ openssl req -new -key $CLIENT_KEY_PAIR_PATH -out $CLIENT_CRS_PATH \
 # generate TLS cert from CSR, key, CA root key
 openssl x509 -req -in $CLIENT_CRS_PATH \
     -CA $CA_CERT_PATH -CAkey $CA_KEY_PAIR_PATH -CAcreateserial \
-    -extfile <(printf "subjectAltName=DNS:localhost") \
+    -extfile <(printf "subjectAltName=DNS:localhost,DNS:${CLIENT_COMMON_NAME}") \
     -out $CLIENT_CERT_PATH -days 365 -sha256
 
 # == convert server key and client key/cert into expected formats by server/client
