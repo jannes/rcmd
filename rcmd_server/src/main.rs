@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env};
+use std::{collections::HashMap, env, net::IpAddr, str::FromStr};
 
 use rcmd_lib::job_pool::{JobOutput, JobSpec, JobStatus};
 use rocket::{
@@ -74,6 +74,7 @@ fn rocket() -> _ {
 
     let config = Config {
         tls: Some(tls_config),
+        address: IpAddr::from_str("0.0.0.0").unwrap(),
         ..Default::default()
     };
 
