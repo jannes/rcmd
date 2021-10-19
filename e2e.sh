@@ -2,6 +2,11 @@
 
 # this is just an ugly script to do some simple e2e test
 # for locally running server/client
+# TODO:
+# add missing tests for
+# - make request to endpoint without certificate
+# - use invalid certificate
+# - use multiple clients and verify that they only observe their own jobs
 
 cargo build 
 
