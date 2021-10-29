@@ -1,3 +1,8 @@
+# RCMD
+
+Just a simple learning project to understand TLS and Unix processes better.
+See e2e.sh for some examples of using the client to execute, query and stop commands.
+
 # Development setup
 
 Required: 
